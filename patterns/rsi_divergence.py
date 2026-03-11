@@ -142,4 +142,37 @@ class RSIDivergenceDetector(PatternDetector):
                                    f"RSI {rsi[i1]:.1f}→{rsi[i2]:.1f} (lower)"),
                 ))
 
+        # ── Hidden Bearish: price LH (rally in downtrend), RSI HH ────────────
+        if len(high_idx) >= 2 and "sma50" in df.columns:
+            i1, i2   = high_idx[-2], high_idx[-1]
+            price_lh = close[i2] < close[i1]   # lower high = rally in downtrend
+            rsi_hh   = rsi[i2]   > rsi[i1] + self.RSI_MIN_DIFF
+
+            # Confirm downtrend: close below SMA50
+            sma50_last  = float(df["sma50"].iloc[-1])
+            in_downtrend = last_close < sma50_last
+
+            if price_lh and rsi_hh and in_downtrend:
+                score  = 50.0
+                if rsi[i2] > RSI_OVERBOUGHT:
+                    score += 15
+                score  = max(0.0, min(100.0, score))
+
+                stop   = close[i2] + STOP_ATR_MULT * atr_val
+                target = last_close - TARGET_ATR_MULT * atr_val
+
+                signals.append(Signal(
+                    ticker      = ticker,
+                    pattern     = "Hidden Bearish Divergence (RSI)",
+                    direction   = "short",
+                    timeframe   = timeframe,
+                    detected_at = df.index[-1],
+                    entry       = round(last_close, 4),
+                    stop        = round(stop, 4),
+                    target      = round(target, 4),
+                    confidence  = round(score, 1),
+                    notes       = (f"Price highs {close[i1]:.4f}→{close[i2]:.4f} (lower) "
+                                   f"RSI {rsi[i1]:.1f}→{rsi[i2]:.1f} (higher)"),
+                ))
+
         return signals

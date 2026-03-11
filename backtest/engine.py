@@ -56,6 +56,7 @@ def run_backtest(
     timeframe: str = "daily",
     min_bars_before_detect: int = 60,
     max_bars_in_trade: int = 30,
+    stride: int = 1,
 ) -> BacktestResult | None:
     """
     Walk-forward backtest for a single detector on a single instrument.
@@ -64,14 +65,24 @@ def run_backtest(
     Stop   : fixed from signal (entry - STOP_ATR_MULT * ATR)
     Target : fixed from signal (entry + TARGET_ATR_MULT * ATR)
     Exit   : whichever of stop/target hits first, or max_bars_in_trade
+
+    Args:
+        stride: Check for signals every N bars (default=1). Increasing to 2 or 3
+                gives a ~stride× speedup with minimal accuracy loss.
     """
     if len(df) < min_bars_before_detect + 10:
         return None
 
     trades: list[dict] = []
+    # Track when the current open trade ends so we don't stack positions
+    in_trade_until: int = -1
 
     # Walk forward: detect at bar i, trade from bar i+1
-    for i in range(min_bars_before_detect, len(df) - 1):
+    for i in range(min_bars_before_detect, len(df) - 1, stride):
+        # Skip detection while a trade is still open
+        if i <= in_trade_until:
+            continue
+
         slice_df = df.iloc[:i + 1].copy()
 
         try:
@@ -146,6 +157,10 @@ def run_backtest(
                 "bars_held":   bars_held,
                 "confidence":  sig.confidence,
             })
+
+            # Block new entries until this trade is closed
+            in_trade_until = entry_bar + bars_held
+            break  # only take first qualifying signal per bar
 
     if not trades:
         return BacktestResult(

@@ -62,6 +62,19 @@ def parse_args() -> argparse.Namespace:
         default=False,
         help="Enable verbose logging",
     )
+    parser.add_argument(
+        "--commodities",
+        action="store_true",
+        default=False,
+        help="Include commodities (GC, CL, NG…) in the universe scan",
+    )
+    parser.add_argument(
+        "--stride",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Backtest detection stride — check every N bars (default: 1, faster: 2-3)",
+    )
     return parser.parse_args()
 
 
@@ -77,6 +90,8 @@ def main() -> None:
         run_backtest_flag  = not args.no_backtest,
         categories         = args.categories,
         top_n              = args.top,
+        include_commodities= args.commodities,
+        backtest_stride    = args.stride,
     )
 
     print_report(results, timeframe=args.timeframe)

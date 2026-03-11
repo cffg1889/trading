@@ -167,7 +167,7 @@ def print_report(results: list[dict], timeframe: str = "daily") -> None:
                 f"  Expiry    : ~{opt.dte} days",
                 f"  Premium   : ~{opt.estimated_premium:.4f}",
                 f"  Max loss  : {opt.max_loss:.4f}",
-                f"  Max gain  : {opt.max_gain:.4f}" if opt.max_gain < 999999 else "  Max gain  : unlimited",
+                f"  Max gain  : {opt.max_gain:.4f}" if opt.max_gain is not None else "  Max gain  : unlimited",
                 f"  IV used   : {opt.iv_used*100:.0f}%",
             ]
 

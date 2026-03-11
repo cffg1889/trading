@@ -15,6 +15,7 @@ import pandas as pd
 
 from data.universe import get_universe, get_flat_universe
 from data.fetcher   import get_ohlcv, add_indicators
+from config        import BACKTEST_PERIOD
 from patterns       import ALL_DETECTORS
 from patterns.base  import Signal
 from backtest.engine import run_backtest, BacktestResult
@@ -31,6 +32,7 @@ def _process_ticker(
     ticker: str,
     timeframe: str,
     run_bt: bool,
+    backtest_stride: int = 1,
 ) -> list[dict]:
     """
     Fetch data, run all detectors, optionally backtest, build trade recommendations.
@@ -51,23 +53,28 @@ def _process_ticker(
             logger.debug(f"[scan] {ticker} {detector.name}: {e}")
             continue
 
+        # ── Backtest once per detector (not once per signal) ──────────────────
+        bt_result: BacktestResult | None = None
+        if run_bt and signals:
+            cached = bt_cache_load(ticker, detector.name, timeframe)
+            if cached:
+                bt_result = BacktestResult(**cached)
+            else:
+                # For daily scans, try to fetch a longer history for backtest
+                df_bt = df
+                if timeframe == "daily":
+                    df_long = get_ohlcv(ticker, timeframe=timeframe, period=BACKTEST_PERIOD)
+                    if df_long is not None and len(df_long) >= 60:
+                        df_bt = add_indicators(df_long)
+                if len(df_bt) >= 60:
+                    bt_result = run_backtest(detector, ticker, df_bt, timeframe,
+                                             stride=backtest_stride)
+                    if bt_result:
+                        # Save without raw trades to keep cache files small
+                        cache_data = {**bt_result.__dict__, "trades": []}
+                        bt_cache_save(ticker, detector.name, timeframe, cache_data)
+
         for sig in signals:
-            bt_result: BacktestResult | None = None
-
-            if run_bt:
-                # Try cache first
-                cached = bt_cache_load(ticker, detector.name, timeframe)
-                if cached:
-                    bt_result = BacktestResult(**cached)
-                else:
-                    # Fetch longer history for backtest
-                    df_bt = get_ohlcv(ticker, timeframe=timeframe)
-                    if df_bt is not None and len(df_bt) >= 60:
-                        df_bt = add_indicators(df_bt)
-                        bt_result = run_backtest(detector, ticker, df_bt, timeframe)
-                        if bt_result:
-                            bt_cache_save(ticker, detector.name, timeframe, bt_result.__dict__)
-
             # Attach backtest stats to signal
             if bt_result and bt_result.n_trades > 0:
                 sig.win_rate  = bt_result.win_rate
@@ -99,24 +106,28 @@ def run_scan(
     run_backtest_flag: bool = True,
     categories:  list[str] | None = None,
     top_n:       int  = TOP_N_SIGNALS,
+    include_commodities: bool = False,
+    backtest_stride: int = 1,
 ) -> list[dict]:
     """
     Scan the full universe and return top_n signals sorted by confidence.
 
     Args:
-        timeframe:           "daily" | "hourly" | "intraday"
-        max_workers:         parallelism level
-        run_backtest_flag:   compute historical win rates (slower)
-        categories:          limit to specific universe categories
-        top_n:               max signals to return
+        timeframe:            "daily" | "hourly" | "intraday"
+        max_workers:          parallelism level
+        run_backtest_flag:    compute historical win rates (slower)
+        categories:           limit to specific universe categories
+        top_n:                max signals to return
+        include_commodities:  add GC, CL, NG… to the scan
+        backtest_stride:      check every N bars in walk-forward (1=every bar)
     """
-    universe = get_universe()
+    universe = get_universe(include_commodities=include_commodities)
     if categories:
         tickers = []
         for cat in categories:
             tickers.extend(universe.get(cat, []))
     else:
-        tickers = get_flat_universe()
+        tickers = get_flat_universe(include_commodities=include_commodities)
 
     logger.info(f"Scanning {len(tickers)} instruments ({timeframe}) with {max_workers} workers…")
 
@@ -124,7 +135,7 @@ def run_scan(
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = {
-            executor.submit(_process_ticker, t, timeframe, run_backtest_flag): t
+            executor.submit(_process_ticker, t, timeframe, run_backtest_flag, backtest_stride): t
             for t in tickers
         }
         for future in tqdm(as_completed(futures), total=len(futures), desc="Scanning"):

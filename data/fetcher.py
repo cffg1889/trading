@@ -39,6 +39,7 @@ def get_ohlcv(
     ticker: str,
     timeframe: str = "daily",
     force_refresh: bool = False,
+    period: str | None = None,
 ) -> pd.DataFrame | None:
     """
     Fetch OHLCV data for a ticker.
@@ -47,26 +48,35 @@ def get_ohlcv(
         Open, High, Low, Close, Volume
     Indexed by datetime (UTC-aware).
 
+    Args:
+        period: Override the default period (e.g. "5y" for backtest history).
+                When set, bypasses the cache (result is not cached).
+
     Returns None if data cannot be fetched.
     """
-    cache_file = _cache_path(ticker, timeframe)
-
-    if not force_refresh and _is_cache_valid(cache_file, timeframe):
-        try:
-            df = pd.read_parquet(cache_file)
-            logger.debug(f"[cache hit]  {ticker} ({timeframe})")
-            return df
-        except Exception as e:
-            logger.warning(f"[cache read error] {ticker}: {e}")
-
     params = TIMEFRAMES.get(timeframe)
     if params is None:
         raise ValueError(f"Unknown timeframe '{timeframe}'. Choose from {list(TIMEFRAMES)}")
 
+    effective_period = period or params["period"]
+
+    # Only use cache when fetching the default period
+    if period is None:
+        cache_file = _cache_path(ticker, timeframe)
+        if not force_refresh and _is_cache_valid(cache_file, timeframe):
+            try:
+                df = pd.read_parquet(cache_file)
+                logger.debug(f"[cache hit]  {ticker} ({timeframe})")
+                return df
+            except Exception as e:
+                logger.warning(f"[cache read error] {ticker}: {e}")
+    else:
+        cache_file = None
+
     try:
         raw = yf.download(
             ticker,
-            period=params["period"],
+            period=effective_period,
             interval=params["interval"],
             auto_adjust=True,
             progress=False,
@@ -97,8 +107,9 @@ def get_ohlcv(
         df.index = df.index.tz_localize("UTC")
 
     try:
-        df.to_parquet(cache_file)
-        logger.debug(f"[cached]     {ticker} ({timeframe})")
+        if cache_file is not None:
+            df.to_parquet(cache_file)
+            logger.debug(f"[cached]     {ticker} ({timeframe})")
     except Exception as e:
         logger.warning(f"[cache write error] {ticker}: {e}")
 
@@ -118,7 +129,7 @@ def get_ohlcv_batch(
     """
     results: dict[str, pd.DataFrame] = {}
 
-    for ticker in tickers:
+    for idx, ticker in enumerate(tickers):
         for attempt in range(max_retries + 1):
             df = get_ohlcv(ticker, timeframe=timeframe, force_refresh=force_refresh)
             if df is not None:
@@ -127,7 +138,8 @@ def get_ohlcv_batch(
             if attempt < max_retries:
                 time.sleep(delay_between * (attempt + 1))
 
-        time.sleep(delay_between)
+        if idx < len(tickers) - 1:
+            time.sleep(delay_between)
 
     return results
 

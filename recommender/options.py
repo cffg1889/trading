@@ -63,7 +63,7 @@ class OptionsRecommendation:
     dte:            int      # days to expiry
     estimated_premium: float
     max_loss:       float
-    max_gain:       float    # capped for spreads
+    max_gain:       Optional[float]   # None = unlimited (outright options)
     iv_used:        float
 
     @property
@@ -71,12 +71,13 @@ class OptionsRecommendation:
         spread_str = ""
         if self.short_strike:
             spread_str = f"/ {self.short_strike:.2f} spread"
+        max_gain_str = f"{self.max_gain:.2f}" if self.max_gain is not None else "unlimited"
         return (
             f"  ▶ {self.structure.upper()}  "
             f"Strike {self.long_strike:.2f}{spread_str}  "
             f"Exp ~{self.dte}d  "
             f"Premium ~{self.estimated_premium:.2f}  "
-            f"MaxLoss {self.max_loss:.2f}  MaxGain {self.max_gain:.2f}  "
+            f"MaxLoss {self.max_loss:.2f}  MaxGain {max_gain_str}  "
             f"(IV {self.iv_used*100:.0f}%)"
         )
 
@@ -159,7 +160,7 @@ def recommend(
         short_K_val = None
         net_premium = long_premium
         max_loss    = net_premium
-        max_gain    = float("inf")   # unlimited for outright
+        max_gain    = None   # unlimited for outright options
         structure   = f"long {opt_type}"
 
     return OptionsRecommendation(
@@ -172,6 +173,6 @@ def recommend(
         dte               = dte,
         estimated_premium = round(net_premium, 4),
         max_loss          = round(max_loss, 4),
-        max_gain          = round(max_gain, 4) if max_gain != float("inf") else 999999.0,
+        max_gain          = round(max_gain, 4) if max_gain is not None else None,
         iv_used           = round(iv, 4),
     )

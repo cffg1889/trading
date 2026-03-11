@@ -128,12 +128,13 @@ def get_nasdaq100() -> list[str]:
         )
         # Find the table with a 'Ticker' or 'Symbol' column
         for t in tables:
-            cols = [c.lower() for c in t.columns]
-            if "ticker" in cols:
-                col = t.columns[[c.lower() == "ticker" for c in t.columns][0] and True]
-                return t["Ticker"].dropna().tolist()
-            if "symbol" in cols:
-                return t["Symbol"].dropna().tolist()
+            cols_lower = [c.lower() for c in t.columns]
+            if "ticker" in cols_lower:
+                idx = cols_lower.index("ticker")
+                return t.iloc[:, idx].dropna().tolist()
+            if "symbol" in cols_lower:
+                idx = cols_lower.index("symbol")
+                return t.iloc[:, idx].dropna().tolist()
         return []
     except Exception as e:
         print(f"[universe] Could not fetch Nasdaq 100 from Wikipedia: {e}")
