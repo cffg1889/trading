@@ -1,52 +1,61 @@
-"""
-Global configuration for the trading signal detector.
-"""
+import os
+from dotenv import load_dotenv
 
-from pathlib import Path
+load_dotenv()
 
-# ── Paths ─────────────────────────────────────────────────────────────────────
-BASE_DIR   = Path(__file__).parent
-CACHE_DIR  = BASE_DIR / "cache"
-CACHE_DIR.mkdir(exist_ok=True)
+# ── Target stock ──────────────────────────────────────────────────────────────
+TICKER = "BX"
+COMPANY = "Blackstone Inc"
+EXCHANGE = "NYSE"
 
-# ── Data settings ─────────────────────────────────────────────────────────────
-TIMEFRAMES = {
-    "daily":   {"period": "2y",   "interval": "1d"},
-    "hourly":  {"period": "60d",  "interval": "1h"},
-    "intraday":{"period": "7d",   "interval": "15m"},
+# ── Peers for relative comparison ────────────────────────────────────────────
+PEERS = ["APO", "KKR", "CG", "ARES"]
+
+# ── Blackstone LinkedIn profiles to monitor ───────────────────────────────────
+LINKEDIN_PROFILES = [
+    "https://www.linkedin.com/in/stephen-schwarzman/",
+    "https://www.linkedin.com/in/jon-gray-blackstone/",
+]
+
+# ── Credentials ──────────────────────────────────────────────────────────────
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+TELEGRAM_TOKEN    = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID  = os.getenv("TELEGRAM_CHAT_ID")
+
+WSJ_EMAIL         = os.getenv("WSJ_EMAIL")
+WSJ_PASSWORD      = os.getenv("WSJ_PASSWORD")
+CNBC_EMAIL        = os.getenv("CNBC_EMAIL")
+CNBC_PASSWORD     = os.getenv("CNBC_PASSWORD")
+LINKEDIN_EMAIL    = os.getenv("LINKEDIN_EMAIL")
+LINKEDIN_PASSWORD = os.getenv("LINKEDIN_PASSWORD")
+
+# ── Dashboard ─────────────────────────────────────────────────────────────────
+DASHBOARD_URL = os.getenv("DASHBOARD_URL", "http://localhost:8050")
+PORT          = int(os.getenv("PORT", 8050))
+
+# ── Technical defaults ────────────────────────────────────────────────────────
+CHART_PERIODS = {
+    "1W":  ("7d",  "15m"),
+    "1M":  ("1mo", "1h"),
+    "3M":  ("3mo", "1d"),
+    "1Y":  ("1y",  "1d"),
+    "3Y":  ("3y",  "1wk"),
+}
+DEFAULT_PERIOD = "1Y"
+
+# ── Alert thresholds ──────────────────────────────────────────────────────────
+PRICE_ALERT_PCT   = 3.0    # alert if price moves ±3% intraday
+RSI_OVERSOLD      = 30
+RSI_OVERBOUGHT    = 70
+
+# ── Conviction score weights ──────────────────────────────────────────────────
+WEIGHTS = {
+    "technical":   0.30,
+    "fundamental": 0.25,
+    "news":        0.20,
+    "analyst":     0.15,
+    "social":      0.10,
 }
 
-DEFAULT_TIMEFRAME = "daily"
-
-# Cache expiry in hours
-CACHE_EXPIRY_HOURS = {
-    "daily":    24,
-    "hourly":   1,
-    "intraday": 0.25,   # 15 minutes
-}
-
-# ── Pattern settings ──────────────────────────────────────────────────────────
-MIN_PATTERN_BARS      = 10   # minimum bars needed before detecting
-DOUBLE_BOTTOM_WINDOW  = 60   # bars to scan for double bottom
-BREAKOUT_VOL_MULT     = 1.5  # volume must be 1.5x average
-RSI_PERIOD            = 14
-RSI_OVERSOLD          = 35
-RSI_OVERBOUGHT        = 65
-VWAP_STD_THRESHOLD    = 2.0  # VWAP deviation in std devs
-BB_PERIOD             = 20
-BB_STD               = 2.0
-KELTNER_PERIOD        = 20
-KELTNER_MULT          = 1.5
-
-# ── Backtest settings ─────────────────────────────────────────────────────────
-BACKTEST_PERIOD = "5y"
-RISK_REWARD_MIN = 1.5         # minimum R:R to include signal
-STOP_ATR_MULT   = 1.5         # stop = entry ± 1.5 × ATR
-TARGET_ATR_MULT = 3.0         # target = entry ± 3.0 × ATR
-
-# ── Options settings ──────────────────────────────────────────────────────────
-DEFAULT_RISK_FREE_RATE = 0.05   # 5%
-OPTIONS_MATURITIES     = [7, 14, 21, 30, 45]  # days to expiry candidates
-
-# ── Output ────────────────────────────────────────────────────────────────────
-TOP_N_SIGNALS = 20   # how many signals to display in the report
+# ── Model ─────────────────────────────────────────────────────────────────────
+CLAUDE_MODEL = "claude-sonnet-4-6"

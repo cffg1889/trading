@@ -1,100 +1,69 @@
 """
-Trading Signal Scanner — entry point.
+BX Intelligence — entry point.
 
 Usage:
-    python main.py                          # daily scan, full universe
-    python main.py --timeframe hourly       # hourly scan
-    python main.py --categories SP500 DJIA  # limit to specific indices
-    python main.py --no-backtest            # skip backtest (faster)
-    python main.py --workers 4              # control parallelism
-    python main.py --top 30                 # show top 30 signals
+  python main.py           # Start dashboard + scheduler
+  python main.py --setup   # First-time Telegram setup
+  python main.py --run     # Run analysis now (no server)
 """
+import sys
+import threading
+from data.store import init_db
+from config import PORT
 
-from __future__ import annotations
-import argparse
-import logging
+def main():
+    args = sys.argv[1:]
 
-from scanner.scan  import run_scan
-from output.report import print_report
+    # ── Init DB ───────────────────────────────────────────────────────────────
+    init_db()
 
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(levelname)s | %(name)s | %(message)s",
-)
+    # ── Telegram setup mode ───────────────────────────────────────────────────
+    if "--setup" in args:
+        from alerts.telegram import setup_and_get_chat_id
+        chat_id = setup_and_get_chat_id()
+        if chat_id:
+            print(f"\n✅ Setup complete. Chat ID saved: {chat_id}")
+            print("Run `python main.py` to start the full system.")
+        else:
+            print("\n❌ Setup failed. Check your bot token.")
+        return
 
+    # ── One-shot analysis mode ────────────────────────────────────────────────
+    if "--run" in args:
+        print("Running full analysis...")
+        from agents import orchestrator
+        summary = orchestrator.run()
+        print(f"\nConviction: {summary['conviction']} ({summary['conviction_score']:+.2f})")
+        print(f"\n{summary['recommendation']}")
+        return
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Trading Signal Scanner")
-    parser.add_argument(
-        "--timeframe", "-t",
-        choices=["daily", "hourly", "intraday"],
-        default="daily",
-        help="Timeframe to scan (default: daily)",
+    # ── Full mode: scheduler + dashboard ─────────────────────────────────────
+    print("╔══════════════════════════════════════╗")
+    print("║       BX Intelligence System         ║")
+    print("╚══════════════════════════════════════╝")
+
+    # Start scheduler in background thread
+    from scheduler.jobs import create_scheduler, job_full_analysis
+    scheduler = create_scheduler()
+    scheduler.start()
+    print(f"[Scheduler] Started. Jobs: {len(scheduler.get_jobs())}")
+
+    # Run initial analysis in background so dashboard shows data immediately
+    def initial_run():
+        print("[Startup] Running initial analysis…")
+        job_full_analysis("startup")
+    threading.Thread(target=initial_run, daemon=True).start()
+
+    # Start Dash server (blocking)
+    from dashboard.app import app
+    print(f"[Dashboard] Starting on port {PORT}…")
+    print(f"[Dashboard] Open: http://localhost:{PORT}")
+    app.run(
+        host="0.0.0.0",
+        port=PORT,
+        debug=False,
+        use_reloader=False,
     )
-    parser.add_argument(
-        "--categories", "-c",
-        nargs="+",
-        default=None,
-        metavar="CAT",
-        help="Universe categories to include (e.g. SP500 DJIA FX). Default: all.",
-    )
-    parser.add_argument(
-        "--no-backtest",
-        action="store_true",
-        default=False,
-        help="Skip backtesting (much faster, no win rates)",
-    )
-    parser.add_argument(
-        "--workers", "-w",
-        type=int,
-        default=8,
-        help="Number of parallel worker threads (default: 8)",
-    )
-    parser.add_argument(
-        "--top", "-n",
-        type=int,
-        default=20,
-        help="Number of top signals to display (default: 20)",
-    )
-    parser.add_argument(
-        "--verbose", "-v",
-        action="store_true",
-        default=False,
-        help="Enable verbose logging",
-    )
-    parser.add_argument(
-        "--commodities",
-        action="store_true",
-        default=False,
-        help="Include commodities (GC, CL, NG…) in the universe scan",
-    )
-    parser.add_argument(
-        "--stride",
-        type=int,
-        default=1,
-        metavar="N",
-        help="Backtest detection stride — check every N bars (default: 1, faster: 2-3)",
-    )
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-
-    if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
-
-    results = run_scan(
-        timeframe          = args.timeframe,
-        max_workers        = args.workers,
-        run_backtest_flag  = not args.no_backtest,
-        categories         = args.categories,
-        top_n              = args.top,
-        include_commodities= args.commodities,
-        backtest_stride    = args.stride,
-    )
-
-    print_report(results, timeframe=args.timeframe)
 
 
 if __name__ == "__main__":

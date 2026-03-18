@@ -30,3 +30,13 @@ cache/
 
 # Logs
 *.log
+
+# Secrets
+.env
+
+# Database
+db/
+*.db
+
+# Playwright
+playwright_state/
