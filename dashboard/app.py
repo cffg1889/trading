@@ -12,7 +12,7 @@ import numpy as np
 from datetime import datetime
 import threading
 
-from data.price import get_price_data, get_key_levels, get_current_quote
+from data.price import get_price_data, get_key_levels, get_current_quote, get_channel_lines, get_short_interest, get_implied_volatility, get_realized_volatility
 from data.fundamentals import get_fundamentals, get_analyst_ratings, get_earnings_history, get_peer_comparison
 from data.news import fetch_all_news
 import config
@@ -153,27 +153,34 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         df = get_price_data(period=period)
         quote = get_current_quote()
         levels = get_key_levels(df)
-        fig = build_chart(df, levels)
+        channel = get_channel_lines(df)
+        short = get_short_interest()
+        ivol  = get_implied_volatility()
+        rv    = get_realized_volatility(df)
+        fig = build_chart(df, levels, channel, short, ivol, rv)
         price_component = build_price_header(quote)
         signal, signal_color = compute_signal(df, levels)
         kpis = build_kpi_cards(df, levels, quote)
         return fig, price_component, signal, signal_color, kpis
     except Exception as e:
+        import traceback; traceback.print_exc()
         empty_fig = go.Figure()
         empty_fig.update_layout(template="plotly_dark", paper_bgcolor=COLORS["bg"])
         return empty_fig, f"Error: {e}", "ERROR", "danger", []
 
 
-def build_chart(df: pd.DataFrame, levels: dict) -> go.Figure:
-    """Build the comprehensive 4-panel technical analysis chart."""
+def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
+                short: dict = None, ivol: dict = None, rv: "pd.Series" = None) -> go.Figure:
+    """Build the comprehensive 6-panel technical analysis chart."""
 
-    # 4 rows: Price (60%), Volume (15%), RSI (12%), MACD (13%)
+    # 6 rows: Price (46%), Volume (11%), RSI (10%), MACD (11%), Short Interest (11%), IV (11%)
     fig = make_subplots(
-        rows=4, cols=1,
+        rows=6, cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.60, 0.15, 0.12, 0.13],
-        subplot_titles=("", "Volume", "RSI (14)", "MACD (12/26/9)"),
+        vertical_spacing=0.018,
+        row_heights=[0.46, 0.11, 0.10, 0.11, 0.11, 0.11],
+        subplot_titles=("", "Volume", "RSI (14)", "MACD (12/26/9)",
+                        "Short Interest % Float", "Volatility — 30d Realized (blue) vs IV (orange dots)"),
     )
 
     # ── ROW 1: Candlesticks + overlays ───────────────────────────
@@ -234,6 +241,49 @@ def build_chart(df: pd.DataFrame, levels: dict) -> go.Figure:
                   annotation_text=f"  ${current_price:.2f}", annotation_font_color=COLORS["text"],
                   annotation_position="right", row=1, col=1)
 
+    # ── Channel lines (one per detected channel) ──────────────────
+    for ch in (channel or []):
+        # Upper line
+        fig.add_trace(go.Scatter(
+            x=ch["upper_x"], y=ch["upper_y"],
+            mode="lines",
+            line=dict(color=ch["color_upper"], width=1.8),
+            name=ch["label"],
+            legendgroup=ch["label"],
+            showlegend=True,
+            hoverinfo="skip",
+        ), row=1, col=1)
+
+        # Lower line (filled to upper)
+        fig.add_trace(go.Scatter(
+            x=ch["lower_x"], y=ch["lower_y"],
+            mode="lines",
+            line=dict(color=ch["color_lower"], width=1.8),
+            name=ch["label"],
+            legendgroup=ch["label"],
+            showlegend=False,
+            fill="tonexty",
+            fillcolor=ch["fill"],
+            hoverinfo="skip",
+        ), row=1, col=1)
+
+        # Anchor dots at the two swing points used to draw each line
+        fig.add_trace(go.Scatter(
+            x=ch["anchor_hi_x"], y=ch["anchor_hi_y"],
+            mode="markers",
+            marker=dict(color=ch["color_upper"], size=6, symbol="circle"),
+            showlegend=False, hoverinfo="skip",
+            legendgroup=ch["label"],
+        ), row=1, col=1)
+        fig.add_trace(go.Scatter(
+            x=ch["anchor_lo_x"], y=ch["anchor_lo_y"],
+            mode="markers",
+            marker=dict(color=ch["color_lower"], size=6, symbol="circle-open",
+                        line=dict(width=2, color=ch["color_lower"])),
+            showlegend=False, hoverinfo="skip",
+            legendgroup=ch["label"],
+        ), row=1, col=1)
+
     # ── ROW 2: Volume ─────────────────────────────────────────────
     colors_vol = [COLORS["up"] if c >= o else COLORS["down"]
                   for c, o in zip(df["close"], df["open"])]
@@ -270,6 +320,114 @@ def build_chart(df: pd.DataFrame, levels: dict) -> go.Figure:
     fig.add_trace(go.Scatter(x=df.index, y=df["macd_signal"], name="Signal", line=dict(color=COLORS["orange"], width=1.3), showlegend=False), row=4, col=1)
     fig.add_hline(y=0, line_dash="dot", line_color=COLORS["muted"], line_width=0.5, row=4, col=1)
 
+    # ── ROW 5: Short Interest ──────────────────────────────────────
+    if short and short.get("dates"):
+        cur_pct  = short["current_pct"]
+        si_color = COLORS["red"] if cur_pct > 5 else COLORS["yellow"] if cur_pct > 3 else COLORS["green"]
+
+        # Build step-line: prepend chart start with first known value,
+        # append chart end with last known value so it spans the full x-axis
+        si_dates  = [df.index[0]] + list(short["dates"]) + [df.index[-1]]
+        si_values = [short["values"][0]] + list(short["values"]) + [short["values"][-1]]
+
+        # Actual known data points (markers only at real FINRA dates)
+        fig.add_trace(go.Scatter(
+            x=short["dates"], y=short["values"],
+            mode="markers",
+            marker=dict(size=8, color=si_color, symbol="circle",
+                        line=dict(width=1.5, color="white")),
+            name=f"Short Interest {cur_pct:.1f}%",
+            showlegend=True,
+            hovertemplate="%{x|%b %d %Y}: %{y:.2f}%<extra></extra>",
+        ), row=5, col=1)
+
+        # Step line connecting all points across full chart width
+        fig.add_trace(go.Scatter(
+            x=si_dates, y=si_values,
+            mode="lines",
+            line=dict(color=si_color, width=2, shape="hv"),
+            fill="tozeroy",
+            fillcolor="rgba(63,185,80,0.07)" if cur_pct <= 3 else
+                      "rgba(210,153,34,0.07)" if cur_pct <= 5 else
+                      "rgba(248,81,73,0.07)",
+            showlegend=False,
+            hoverinfo="skip",
+        ), row=5, col=1)
+
+        # Reference lines
+        fig.add_hline(y=3, line_dash="dot", line_color=COLORS["yellow"],
+                      line_width=0.8, row=5, col=1,
+                      annotation_text="3% elevated", annotation_font_color=COLORS["yellow"],
+                      annotation_position="right")
+        fig.add_hline(y=5, line_dash="dot", line_color=COLORS["red"],
+                      line_width=0.8, row=5, col=1,
+                      annotation_text="5% high", annotation_font_color=COLORS["red"],
+                      annotation_position="right")
+
+        # Current value + days-to-cover label
+        dtc = short.get("days_to_cover", 0)
+        fig.add_annotation(
+            x=df.index[-1], y=cur_pct,
+            text=f" {cur_pct:.1f}%  ({dtc:.1f}d to cover)",
+            showarrow=False, xanchor="left",
+            font=dict(color=si_color, size=10, family="Inter, system-ui, sans-serif"),
+            row=5, col=1,
+        )
+
+    # ── ROW 6: Realized Volatility (full history) + IV dots ───────
+    if rv is not None and len(rv) > 0:
+        rv_cur   = float(rv.iloc[-1])
+        rv_color = COLORS["red"] if rv_cur > 50 else COLORS["yellow"] if rv_cur > 30 else COLORS["green"]
+
+        # ── 30-day Realized Volatility — full continuous history ──
+        fig.add_trace(go.Scatter(
+            x=rv.index, y=rv.values,
+            mode="lines",
+            line=dict(color=COLORS["blue"], width=1.8),
+            fill="tozeroy",
+            fillcolor="rgba(88,166,255,0.07)",
+            name="30d Real. Vol",
+            showlegend=True,
+            hovertemplate="%{x|%b %d %Y}: %{y:.1f}%<extra>RV</extra>",
+        ), row=6, col=1)
+
+        # ── Implied Volatility dots (accumulate over time) ────────
+        if ivol and ivol.get("dates"):
+            iv_cur = ivol["iv_30d"]
+            fig.add_trace(go.Scatter(
+                x=ivol["dates"], y=ivol["values"],
+                mode="markers",
+                marker=dict(size=9, color=COLORS["orange"], symbol="diamond",
+                            line=dict(width=1.5, color="white")),
+                name=f"30d IV {iv_cur:.0f}%",
+                showlegend=True,
+                hovertemplate="%{x|%b %d %Y}: %{y:.1f}%<extra>IV</extra>",
+            ), row=6, col=1)
+
+            # IV vs RV spread annotation — the key signal
+            spread = iv_cur - rv_cur
+            spread_label = (f"IV {iv_cur:.0f}% vs RV {rv_cur:.0f}% → "
+                            f"premium +{spread:.0f}%" if spread >= 0
+                            else f"IV {iv_cur:.0f}% vs RV {rv_cur:.0f}% → discount {spread:.0f}%")
+            signal = "options expensive — fear elevated" if spread > 10 else \
+                     "options cheap — unusually calm" if spread < -5 else "options fairly priced"
+            fig.add_annotation(
+                x=df.index[-1], y=max(rv_cur, iv_cur),
+                text=f" {spread_label} ({signal})",
+                showarrow=False, xanchor="left",
+                font=dict(color=COLORS["orange"], size=9, family="Inter, system-ui, sans-serif"),
+                row=6, col=1,
+            )
+
+        # Reference lines
+        for level, label, color in [(30, "30%", COLORS["green"]),
+                                     (50, "50%", COLORS["yellow"]),
+                                     (70, "70%", COLORS["red"])]:
+            fig.add_hline(y=level, line_dash="dot", line_color=color, line_width=0.7,
+                          row=6, col=1,
+                          annotation_text=label, annotation_font_color=color,
+                          annotation_position="right")
+
     # ── Layout ────────────────────────────────────────────────────
     fig.update_layout(
         paper_bgcolor=COLORS["bg"],
@@ -285,7 +443,7 @@ def build_chart(df: pd.DataFrame, levels: dict) -> go.Figure:
         xaxis_rangeslider_visible=False,
     )
 
-    for i in range(1, 5):
+    for i in range(1, 7):
         fig.update_yaxes(
             gridcolor=COLORS["border"], gridwidth=0.5,
             zerolinecolor=COLORS["border"],
@@ -302,6 +460,8 @@ def build_chart(df: pd.DataFrame, levels: dict) -> go.Figure:
     # Y-axis labels
     fig.update_yaxes(tickprefix="$", row=1, col=1)
     fig.update_yaxes(row=3, col=1, range=[0, 100], dtick=20)
+    fig.update_yaxes(row=5, col=1, ticksuffix="%", rangemode="tozero")
+    fig.update_yaxes(row=6, col=1, ticksuffix="%", rangemode="tozero")
 
     return fig
 
