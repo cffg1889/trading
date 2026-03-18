@@ -1,70 +1,74 @@
 """
-BX Intelligence — entry point.
+BX Intelligence — Entry point.
 
 Usage:
-  python main.py           # Start dashboard + scheduler
-  python main.py --setup   # First-time Telegram setup
-  python main.py --run     # Run analysis now (no server)
+  python main.py           # start dashboard + scheduler
+  python main.py --setup   # one-time Telegram setup
+  python main.py --brief   # send morning brief now (test)
+  python main.py --chart   # send chart to Telegram now (test)
 """
 import sys
+import asyncio
+import socket
 import threading
-from data.store import init_db
-from config import PORT
 
-def main():
-    args = sys.argv[1:]
+def print_banner():
+    ip = _get_ip()
+    print(f"""
++----------------------------------------------+
+|         BX INTELLIGENCE — Blackstone        |
++----------------------------------------------+
+|  Dashboard:  http://{ip}:{8050:<5}           |
+|  Ticker:     BX (NYSE)                       |
+|  Scheduler:  ON (6:30AM / 4:30PM ET)         |
++----------------------------------------------+
+  -> Open the dashboard URL on your iPhone
+""")
 
-    # ── Init DB ───────────────────────────────────────────────────────────────
-    init_db()
-
-    # ── Telegram setup mode ───────────────────────────────────────────────────
-    if "--setup" in args:
-        from alerts.telegram import setup_and_get_chat_id
-        chat_id = setup_and_get_chat_id()
-        if chat_id:
-            print(f"\n✅ Setup complete. Chat ID saved: {chat_id}")
-            print("Run `python main.py` to start the full system.")
-        else:
-            print("\n❌ Setup failed. Check your bot token.")
-        return
-
-    # ── One-shot analysis mode ────────────────────────────────────────────────
-    if "--run" in args:
-        print("Running full analysis...")
-        from agents import orchestrator
-        summary = orchestrator.run()
-        print(f"\nConviction: {summary['conviction']} ({summary['conviction_score']:+.2f})")
-        print(f"\n{summary['recommendation']}")
-        return
-
-    # ── Full mode: scheduler + dashboard ─────────────────────────────────────
-    print("╔══════════════════════════════════════╗")
-    print("║       BX Intelligence System         ║")
-    print("╚══════════════════════════════════════╝")
-
-    # Start scheduler in background thread
-    from scheduler.jobs import create_scheduler, job_full_analysis
-    scheduler = create_scheduler()
-    scheduler.start()
-    print(f"[Scheduler] Started. Jobs: {len(scheduler.get_jobs())}")
-
-    # Run initial analysis in background so dashboard shows data immediately
-    def initial_run():
-        print("[Startup] Running initial analysis…")
-        job_full_analysis("startup")
-    threading.Thread(target=initial_run, daemon=True).start()
-
-    # Start Dash server (blocking)
-    from dashboard.app import app
-    print(f"[Dashboard] Starting on port {PORT}…")
-    print(f"[Dashboard] Open: http://localhost:{PORT}")
-    app.run(
-        host="0.0.0.0",
-        port=PORT,
-        debug=False,
-        use_reloader=False,
-    )
+def _get_ip():
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        return "localhost     "
 
 
 if __name__ == "__main__":
-    main()
+    import config
+
+    # ── --setup: one-time Telegram chat ID setup ──────────────────
+    if "--setup" in sys.argv:
+        from alerts.telegram import setup_chat_id
+        asyncio.run(setup_chat_id())
+        sys.exit(0)
+
+    # ── --brief: send morning brief immediately ───────────────────
+    if "--brief" in sys.argv:
+        print("Sending morning brief to Telegram...")
+        from alerts.telegram import send_morning_brief
+        send_morning_brief()
+        print("Done.")
+        sys.exit(0)
+
+    # ── --chart: send chart image immediately ─────────────────────
+    if "--chart" in sys.argv:
+        print("Sending chart to Telegram...")
+        from alerts.telegram import _send_chart_image, _get_bot
+        from data.price import get_price_data, get_key_levels
+        df = get_price_data(period="1y")
+        levels = get_key_levels(df)
+        asyncio.run(_send_chart_image(df, levels))
+        print("Done.")
+        sys.exit(0)
+
+    # ── Normal mode: start scheduler + dashboard ──────────────────
+    print_banner()
+
+    from scheduler.jobs import start_scheduler
+    from dashboard.app import run_dashboard
+
+    start_scheduler()
+    run_dashboard()  # blocks here (Dash runs in main thread)
