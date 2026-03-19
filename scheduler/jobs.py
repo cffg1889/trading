@@ -96,8 +96,18 @@ def start_scheduler():
         id="intraday_check",
     )
 
+    # Claude agent intelligent analysis: every 15 min during market hours
+    # Runs alongside threshold checks — Claude decides if anything is worth alerting
+    from agent.bx_agent import agent_analyze_and_alert
+    _scheduler.add_job(
+        agent_analyze_and_alert,
+        CronTrigger(minute=f"*/{config.INTRADAY_CHECK_MINUTES}",
+                    hour="9-16", day_of_week="mon-fri", timezone=ET),
+        id="agent_analysis",
+    )
+
     _scheduler.start()
-    print("Scheduler started (Morning 6:30 AM ET / Close 4:30 PM ET / Intraday every 15min)")
+    print("Scheduler started (Morning 6:30 AM ET / Close 4:30 PM ET / Agent every 15min)")
     return _scheduler
 
 

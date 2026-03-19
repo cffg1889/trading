@@ -64,11 +64,13 @@ if __name__ == "__main__":
         print("Done.")
         sys.exit(0)
 
-    # ── Normal mode: start scheduler + dashboard ──────────────────
+    # ── Normal mode: start scheduler + agent + dashboard ─────────
     print_banner()
 
     from scheduler.jobs import start_scheduler
+    from agent.bx_agent import start_command_polling
     from dashboard.app import run_dashboard
 
     start_scheduler()
-    run_dashboard()  # blocks here (Dash runs in main thread)
+    start_command_polling()   # Telegram /commands available immediately
+    run_dashboard()           # blocks here (Dash runs in main thread)
