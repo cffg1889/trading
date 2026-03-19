@@ -218,39 +218,17 @@ def build_news_thread(news_items: list) -> html.Div:
             "borderLeft": f"3px solid {impact_color(item.impact)}",
         })
 
-    # Group by source type with counts
-    sec_items    = [i for i in news_items if i.source_type in ("sec", "insider")]
-    ir_items     = [i for i in news_items if i.source_type == "ir"]
-    social_items = [i for i in news_items if i.source_type == "linkedin"]
-    media_items  = [i for i in news_items if i.source_type in ("cnbc", "wsj")]
-    other_items  = [i for i in news_items if i.source_type == "rss"]
-
-    sections = []
-    for label, group_items in [
-        ("📄 SEC Filings & Insider Trades", sec_items),
-        ("🏢 Blackstone IR", ir_items),
-        ("💼 Management (LinkedIn)", social_items),
-        ("📺 CNBC & WSJ", media_items),
-        ("🌐 All Other News", other_items),
-    ]:
-        if not group_items:
-            continue
-        sections.append(html.Div([
-            html.Div(f"{label}  ({len(group_items)})",
-                    style={"color": COLORS["muted"], "fontSize": "0.70rem",
-                           "fontWeight": "700", "padding": "8px 14px 4px",
-                           "textTransform": "uppercase", "letterSpacing": "0.5px",
-                           "backgroundColor": "rgba(0,0,0,0.3)"}),
-            *[render_item(it) for it in group_items],
-        ]))
+    # All items already sorted by date DESC — flatten into a single chronological feed
+    # (no grouping by source, just date order with a source label per row)
+    all_items = news_items  # already date-sorted from fetch_all_news
 
     return html.Div([
-        html.Div("🧠 INTELLIGENCE THREAD",
+        html.Div(f"🧠 INTELLIGENCE THREAD  — last 24h  ({len(all_items)})",
                 style={"color": COLORS["muted"], "fontSize": "0.7rem",
                        "fontWeight": "700", "letterSpacing": "1px",
-                       "padding": "12px 14px 6px",
+                       "padding": "10px 14px 6px",
                        "textTransform": "uppercase"}),
-        *sections,
+        *[render_item(it) for it in all_items],
     ], style={
         "backgroundColor": COLORS["card"],
         "borderRadius": "8px",
@@ -380,7 +358,7 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         signal, signal_color = compute_signal(df, levels)
         rsi_h_last = float(rsi_h.iloc[-1]) if len(rsi_h) else None
         kpis = build_kpi_cards(df, levels, quote, rsi_h_last)
-        news_items = fetch_all_news(hours_back=48)
+        news_items = fetch_all_news(hours_back=24)
         snapshot = build_snapshot(df, levels, news_items, rsi_h_last)
         thread = build_news_thread(news_items)
         return fig, price_component, signal, signal_color, kpis, snapshot, thread

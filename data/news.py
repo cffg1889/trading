@@ -168,7 +168,7 @@ def _load_cached(hours_back: int = 48) -> List[NewsItem]:
         cutoff = (datetime.now() - timedelta(hours=hours_back)).isoformat()
         rows = conn.execute(
             "SELECT title,source,url,summary,published,sentiment,impact,source_type "
-            "FROM news_cache WHERE fetched_at > ? ORDER BY impact DESC, fetched_at DESC LIMIT 80",
+            "FROM news_cache WHERE fetched_at > ? ORDER BY fetched_at DESC, impact DESC LIMIT 60",
             (cutoff,)
         ).fetchall()
         conn.close()
@@ -789,9 +789,9 @@ def fetch_all_news(hours_back: int = 48, force: bool = False) -> List[NewsItem]:
         return sorted(fetch_rss_news(hours_back) + fetch_edgar_filings(30),
                       key=lambda x: x.impact, reverse=True)[:30]
 
-    # Deduplicate
+    # Deduplicate — preserve date order (cache already sorted by fetched_at DESC)
     seen, unique = set(), []
-    for it in sorted(cached, key=lambda x: x.impact, reverse=True):
+    for it in cached:
         key = re.sub(r"[^a-z0-9]", "", it.title.lower())[:50]
         if key not in seen:
             seen.add(key)
