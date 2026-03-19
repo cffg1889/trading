@@ -18,6 +18,7 @@ import re
 from data.price import get_price_data, get_key_levels, get_current_quote, get_channel_lines, get_short_interest, get_implied_volatility, get_realized_volatility, get_hourly_rsi
 from data.fundamentals import get_fundamentals, get_analyst_ratings, get_earnings_history, get_peer_comparison
 from data.news import fetch_all_news
+from data.bx_segments import get_segment_data
 import config
 
 # ── App init ─────────────────────────────────────────────────────────────────
@@ -1099,6 +1100,96 @@ def render_analysts(active_tab):
 
 # ── Fundamentals tab callback ─────────────────────────────────────────────────
 
+def build_segment_charts() -> list:
+    """Four stacked bar charts: AUM / FRE / DE / DEPS by BX segment."""
+    sd = get_segment_data()
+    quarters = sd["quarters"]
+    colors   = sd["colors"]
+
+    CARD = {"backgroundColor": COLORS["card"], "borderRadius": "8px",
+            "padding": "12px", "marginBottom": "12px"}
+    LABEL = {"color": COLORS["muted"], "fontSize": "0.68rem",
+             "fontWeight": "700", "letterSpacing": "1px",
+             "textTransform": "uppercase", "marginBottom": "4px"}
+
+    def stacked_bar(data: dict, title: str, unit: str, fmt: str = ".0f") -> dcc.Graph:
+        fig = go.Figure()
+        for seg, vals in data.items():
+            fig.add_trace(go.Bar(
+                name=seg,
+                x=quarters,
+                y=vals,
+                marker_color=colors.get(seg, COLORS["muted"]),
+                hovertemplate=f"<b>{seg}</b><br>{unit}{'{:' + fmt + '}'}.format(y)<br>%{{x}}<extra></extra>",
+            ))
+        fig.update_layout(
+            barmode="stack",
+            paper_bgcolor=COLORS["bg"],
+            plot_bgcolor=COLORS["bg"],
+            font=dict(color=COLORS["text"], family="Inter, system-ui, sans-serif", size=11),
+            margin=dict(l=8, r=8, t=28, b=8),
+            height=240,
+            legend=dict(
+                orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                font=dict(size=10), bgcolor="rgba(0,0,0,0)",
+            ),
+            xaxis=dict(showgrid=False, tickfont=dict(size=10)),
+            yaxis=dict(showgrid=True, gridcolor=COLORS["border"],
+                       tickfont=dict(size=10), zeroline=False),
+            title=dict(text=title, font=dict(size=12, color=COLORS["muted"]), x=0),
+        )
+        return dcc.Graph(figure=fig, config={"displayModeBar": False, "responsive": True})
+
+    def line_chart(data: dict, title: str, unit: str) -> dcc.Graph:
+        """For DEPS — single line (total company)."""
+        fig = go.Figure()
+        vals = data["Total"]
+        fig.add_trace(go.Bar(
+            x=quarters, y=vals,
+            marker_color=[COLORS["green"] if v >= 1.0 else COLORS["yellow"] for v in vals],
+            text=[f"{unit}{v:.2f}" for v in vals],
+            textposition="outside",
+            textfont=dict(size=10),
+            showlegend=False,
+            hovertemplate="<b>DEPS</b><br>$%{y:.2f}<br>%{x}<extra></extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor=COLORS["bg"],
+            plot_bgcolor=COLORS["bg"],
+            font=dict(color=COLORS["text"], family="Inter, system-ui, sans-serif", size=11),
+            margin=dict(l=8, r=8, t=28, b=8),
+            height=200,
+            xaxis=dict(showgrid=False, tickfont=dict(size=10)),
+            yaxis=dict(showgrid=True, gridcolor=COLORS["border"],
+                       tickfont=dict(size=10), zeroline=False, range=[0, max(vals) * 1.25]),
+            title=dict(text=title, font=dict(size=12, color=COLORS["muted"]), x=0),
+        )
+        return dcc.Graph(figure=fig, config={"displayModeBar": False, "responsive": True})
+
+    return [
+        html.Div([
+            html.Div("ASSETS UNDER MANAGEMENT  ·  $B  ·  QUARTERLY", style=LABEL),
+            stacked_bar(sd["aum"], "", "$", ".1f"),
+        ], style=CARD),
+        html.Div([
+            html.Div("FEE-RELATED EARNINGS  ·  $M  ·  QUARTERLY", style=LABEL),
+            stacked_bar(sd["fre"], "", "$", ".0f"),
+        ], style=CARD),
+        html.Div([
+            html.Div("DISTRIBUTABLE EARNINGS  ·  $M  ·  QUARTERLY", style=LABEL),
+            stacked_bar(sd["de"], "", "$", ".0f"),
+        ], style=CARD),
+        html.Div([
+            html.Div("DISTRIBUTABLE EARNINGS PER SHARE  ·  $/UNIT  ·  QUARTERLY", style=LABEL),
+            line_chart(sd["deps"], "", "$"),
+        ], style=CARD),
+        html.P(
+            "Source: Blackstone earnings releases & Supplemental Financial Data · ir.blackstone.com",
+            style={"color": COLORS["muted"], "fontSize": "0.7rem", "textAlign": "right", "marginTop": "4px"}
+        ),
+    ]
+
+
 @app.callback(Output("fundamental-tab", "children"), Input("main-tabs", "active_tab"))
 def render_fundamentals(active_tab):
     if active_tab != "tab-fundamentals":
@@ -1106,32 +1197,34 @@ def render_fundamentals(active_tab):
     try:
         f = get_fundamentals()
     except Exception:
-        return html.P("Error loading fundamentals.", style={"color": COLORS["muted"]})
+        f = {}
 
-    rows = [
-        ("Market Cap",      f.get("market_cap")),
-        ("P/E (TTM)",       f.get("pe_ratio")),
-        ("Forward P/E",     f.get("forward_pe")),
-        ("EPS (TTM)",       f"${f.get('eps_ttm') or 'N/A'}"),
-        ("EPS Next Year",   f"${f.get('eps_next_year') or 'N/A'}"),
-        ("Dividend Yield",  f"{f.get('dividend_yield')}%" if f.get("dividend_yield") else "N/A"),
-        ("Revenue TTM",     f.get("revenue_ttm")),
-        ("Profit Margin",   f"{f.get('profit_margin')}%" if f.get("profit_margin") else "N/A"),
-        ("ROE",             f"{f.get('roe')}%" if f.get("roe") else "N/A"),
-        ("Debt/Equity",     f.get("debt_to_equity")),
-        ("Beta",            f.get("beta")),
+    # Key metrics row
+    metrics = [
+        ("Market Cap",     f.get("market_cap")),
+        ("P/E (TTM)",      f.get("pe_ratio")),
+        ("Forward P/E",    f.get("forward_pe")),
+        ("EPS (TTM)",      f"${f.get('eps_ttm') or 'N/A'}"),
+        ("Div. Yield",     f"{f.get('dividend_yield')}%" if f.get("dividend_yield") else "N/A"),
+        ("Beta",           f.get("beta")),
     ]
+    kpi_row = dbc.Row([
+        dbc.Col(html.Div([
+            html.Div(label, style={"color": COLORS["muted"], "fontSize": "0.68rem",
+                                   "fontWeight": "700", "textTransform": "uppercase",
+                                   "letterSpacing": "0.8px"}),
+            html.Div(str(val) if val is not None else "N/A",
+                     style={"color": COLORS["text"], "fontSize": "1rem", "fontWeight": "700"}),
+        ], style={"backgroundColor": COLORS["card"], "borderRadius": "8px",
+                  "padding": "10px 12px", "textAlign": "center"}),
+        xs=6, md=2, className="mb-2")
+        for label, val in metrics
+    ], className="g-2 mb-3")
 
     return html.Div([
-        html.Div([
-            html.Div([
-                html.Span(label, style={"color": COLORS["muted"], "fontSize": "0.82rem"}),
-                html.Span(str(value) if value is not None else "N/A",
-                          style={"color": COLORS["text"], "fontWeight": "600", "fontSize": "0.82rem", "float": "right"}),
-            ], style={"padding": "8px 12px", "borderBottom": f"1px solid {COLORS['border']}"})
-            for label, value in rows
-        ])
-    ], style={"backgroundColor": COLORS["card"], "borderRadius": "8px"})
+        kpi_row,
+        *build_segment_charts(),
+    ])
 
 
 # ── Peers tab callback ────────────────────────────────────────────────────────
