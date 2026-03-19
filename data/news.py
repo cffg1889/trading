@@ -198,7 +198,12 @@ def fetch_rss_news(hours_back: int = 48) -> List[NewsItem]:
     cutoff = datetime.now() - timedelta(hours=hours_back)
     for source, url in RSS_FEEDS.items():
         try:
-            feed = feedparser.parse(url)
+            # Use requests to bypass macOS Python SSL cert issues with feedparser
+            try:
+                resp = requests.get(url, headers=HEADERS, timeout=10)
+                feed = feedparser.parse(resp.content)
+            except Exception:
+                feed = feedparser.parse(url)
             for entry in feed.entries[:8]:
                 title   = entry.get("title", "")
                 summary = entry.get("summary", entry.get("description", ""))
@@ -274,33 +279,157 @@ def fetch_edgar_filings(days_back: int = 60) -> List[NewsItem]:
 
 
 def fetch_insider_trades(days_back: int = 60) -> List[NewsItem]:
-    """Fetch SEC Form 4 (insider buy/sell) for BX executives."""
+    """
+    Fetch BX insider trades from SEC Form 4.
+    Parses the actual Form 4 XML to extract: insider name, role, shares, price.
+    Returns clean one-line items like "Jonathan Gray (President) bought 10,000 shares @ $113.42".
+    """
     items = []
     try:
-        # EDGAR full-text search for BX Form 4 filings
-        url = ("https://efts.sec.gov/LATEST/search-index?q=%22blackstone%22"
-               "&dateRange=custom&startdt=" +
-               (datetime.now() - timedelta(days=days_back)).strftime("%Y-%m-%d") +
-               "&enddt=" + datetime.now().strftime("%Y-%m-%d") +
-               "&forms=4")
-        r = requests.get(url, headers=EDGAR_HEADERS, timeout=10)
-        hits = r.json().get("hits", {}).get("hits", [])
-        for hit in hits[:10]:
-            src = hit.get("_source", {})
-            filed = src.get("file_date", "")
-            entity_name = src.get("display_names", ["Unknown"])
-            if isinstance(entity_name, list):
-                entity_name = ", ".join(entity_name)
-            acc = src.get("accession_no", "").replace("-", "")
-            cik = src.get("entity_id", "1393818")
-            url_f = f"https://www.sec.gov/Archives/edgar/data/{cik}/{acc}/"
-            title = f"Insider Trade (Form 4): {entity_name} — {filed}"
-            items.append(NewsItem(
-                title=title, source="SEC Form 4", url=url_f,
-                summary=f"Form 4 filed by {entity_name} on {filed}. Click to see transaction details.",
-                published=filed, sentiment="neutral",
-                impact=4, source_type="insider",
-            ))
+        # Get the list of Form 4 filings for BX (as issuer) from EDGAR company search
+        list_url = (
+            "https://www.sec.gov/cgi-bin/browse-edgar"
+            "?action=getcompany&CIK=0001393818&type=4"
+            "&dateb=&owner=include&count=15&search_text="
+        )
+        r = requests.get(list_url, headers=EDGAR_HEADERS, timeout=12)
+        soup = BeautifulSoup(r.text, "lxml")
+        cutoff = datetime.now() - timedelta(days=days_back)
+
+        table = soup.find("table", class_="tableFile2")
+        if not table:
+            return items
+
+        for row in table.find_all("tr")[1:]:
+            cols = row.find_all("td")
+            if len(cols) < 4:
+                continue
+            if cols[0].get_text(strip=True) not in ("4", "4/A"):
+                continue
+            date_text = cols[3].get_text(strip=True)
+            try:
+                if datetime.strptime(date_text, "%Y-%m-%d") < cutoff:
+                    continue
+            except Exception:
+                pass
+
+            # Link to filing index page
+            link_el = cols[1].find("a")
+            if not link_el:
+                continue
+            index_href = link_el.get("href", "")
+            if not index_href.startswith("http"):
+                index_href = "https://www.sec.gov" + index_href
+
+            try:
+                # ── Step 1: get filing index → find Form 4 XML ────────────────
+                idx_r = requests.get(index_href, headers=EDGAR_HEADERS, timeout=8)
+                idx_soup = BeautifulSoup(idx_r.text, "lxml")
+                xml_url = None
+                # Prefer ownership.xml (the actual Form 4 data, not the xsl-styled version)
+                for a in idx_soup.find_all("a", href=True):
+                    href = a["href"]
+                    if "xsl" in href:
+                        continue  # skip the XSL-styled version
+                    if href.endswith(".xml") and "index" not in href:
+                        xml_url = ("https://www.sec.gov" + href
+                                   if not href.startswith("http") else href)
+                        break
+                if not xml_url:
+                    continue
+
+                # ── Step 2: parse Form 4 XML with BeautifulSoup (handles malformed XML) ──
+                xml_r = requests.get(xml_url, headers=EDGAR_HEADERS, timeout=8)
+                doc = BeautifulSoup(xml_r.content, "xml")
+
+                # ── Step 3: verify BX is the ISSUER (not just reporting owner) ──
+                issuer_cik_el = doc.find("issuerCik")
+                if not issuer_cik_el:
+                    continue
+                issuer_cik = (issuer_cik_el.get_text() or "").strip().lstrip("0")
+                if issuer_cik != "1393818":
+                    continue  # BX filing as investor in another company, skip
+
+                # Insider identity
+                owner_name = (doc.find("rptOwnerName") or {}).get_text("").strip()
+                officer_el = doc.find("officerTitle")
+                officer_title = officer_el.get_text("").strip() if officer_el else ""
+                dir_el = doc.find("isDirector")
+                is_director = (dir_el.get_text("").strip() == "1") if dir_el else False
+
+                if not owner_name:
+                    continue
+
+                # Transactions (non-derivative = actual BX shares)
+                acquired, disposed = 0.0, 0.0
+                buy_price, sell_price = None, None
+
+                def _txt(parent, tag):
+                    el = parent.find(tag)
+                    return el.get_text("").strip() if el else ""
+
+                for txn in doc.find_all("nonDerivativeTransaction"):
+                    try:
+                        shares_str = _txt(txn, "transactionShares")
+                        # transactionShares contains a nested <value>
+                        shares_val = txn.find("transactionShares")
+                        val_el = shares_val.find("value") if shares_val else None
+                        shares = float(val_el.get_text().strip()) if val_el else 0.0
+
+                        price_el = txn.find("transactionPricePerShare")
+                        price_val = price_el.find("value") if price_el else None
+                        price = float(price_val.get_text().strip()) if price_val else None
+
+                        code_el = txn.find("transactionAcquiredDisposedCode")
+                        code_val = code_el.find("value") if code_el else None
+                        code = code_val.get_text().strip() if code_val else ""
+
+                        if code == "A":
+                            acquired += shares
+                            if price:
+                                buy_price = price
+                        elif code == "D":
+                            disposed += shares
+                            if price:
+                                sell_price = price
+                    except Exception:
+                        continue
+
+                # ── Step 3: format human-readable title ───────────────────────
+                # EDGAR stores names as "LASTNAME FIRSTNAME" (all caps) or mixed case
+                parts = owner_name.split()
+                if owner_name == owner_name.upper() and len(parts) >= 2:
+                    name = f"{parts[1].title()} {parts[0].title()}"
+                else:
+                    name = owner_name  # already readable
+
+                role = officer_title or ("Director" if is_director else "Insider")
+
+                if acquired > 0 and disposed == 0:
+                    p = f" @ ${buy_price:,.2f}" if buy_price else ""
+                    title = f"{name} ({role}) bought {int(acquired):,} shares{p}"
+                    sentiment = "bullish"
+                elif disposed > 0 and acquired == 0:
+                    p = f" @ ${sell_price:,.2f}" if sell_price else ""
+                    title = f"{name} ({role}) sold {int(disposed):,} shares{p}"
+                    sentiment = "bearish"
+                elif acquired > 0 and disposed > 0:
+                    title = f"{name} ({role}): bought {int(acquired):,} / sold {int(disposed):,} shares"
+                    sentiment = "neutral"
+                else:
+                    continue  # derivative-only filing, skip
+
+                items.append(NewsItem(
+                    title=title, source="SEC Form 4", url=index_href,
+                    summary="",
+                    published=date_text, sentiment=sentiment,
+                    impact=4, source_type="insider",
+                ))
+
+            except Exception as e:
+                print(f"[form4] parse error {index_href}: {e}")
+                continue
+
     except Exception as e:
         print(f"[form4] {e}")
     return items

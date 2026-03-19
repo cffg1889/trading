@@ -188,38 +188,34 @@ def build_news_thread(news_items: list) -> html.Div:
 
     def render_item(item):
         return html.Div([
-            # Source row
             html.Div([
-                html.Span(f"{item.icon} {item.source}",
-                         style={"color": COLORS["blue"], "fontWeight": "700",
-                                "fontSize": "0.72rem", "marginRight": "8px"}),
+                # Sentiment dot
                 html.Span(SENT_BADGE[item.sentiment],
-                         style={"marginRight": "6px", "fontSize": "0.75rem"}),
-                html.Span(IMPACT_STARS.get(item.impact, "·"),
-                         style={"color": impact_color(item.impact),
-                                "marginRight": "8px", "fontSize": "0.75rem",
-                                "fontWeight": "700"}),
+                         style={"marginRight": "5px", "fontSize": "0.68rem",
+                                "flexShrink": "0"}),
+                # Source label
+                html.Span(item.source,
+                         style={"color": COLORS["muted"], "fontSize": "0.68rem",
+                                "marginRight": "8px", "flexShrink": "0",
+                                "minWidth": "68px"}),
+                # Title as link — main content
+                html.A(item.title, href=item.url, target="_blank", style={
+                    "color": SENT_COLOR[item.sentiment],
+                    "textDecoration": "none", "fontWeight": "500",
+                    "fontSize": "0.82rem", "flex": "1",
+                    "overflow": "hidden", "whiteSpace": "nowrap",
+                    "textOverflow": "ellipsis",
+                }),
+                # Time
                 html.Span(item.time_ago,
-                         style={"color": COLORS["muted"], "fontSize": "0.70rem"}),
-            ], style={"display": "flex", "alignItems": "center", "marginBottom": "3px"}),
-            # Title
-            html.A(item.title, href=item.url, target="_blank", style={
-                "color": SENT_COLOR[item.sentiment],
-                "textDecoration": "none", "fontWeight": "600",
-                "fontSize": "0.83rem", "lineHeight": "1.4",
-                "display": "block", "marginBottom": "3px",
-            }),
-            # Summary
-            html.P(
-                item.summary[:180] + ("..." if len(item.summary) > 180 else ""),
-                style={"color": COLORS["muted"], "fontSize": "0.75rem",
-                       "margin": "0", "lineHeight": "1.4"},
-            ),
+                         style={"color": COLORS["muted"], "fontSize": "0.68rem",
+                                "marginLeft": "10px", "flexShrink": "0",
+                                "whiteSpace": "nowrap"}),
+            ], style={"display": "flex", "alignItems": "center"}),
         ], style={
-            "padding": "10px 14px",
+            "padding": "5px 14px",
             "borderBottom": f"1px solid {COLORS['border']}",
             "borderLeft": f"3px solid {impact_color(item.impact)}",
-            "marginBottom": "2px",
         })
 
     # Group by source type with counts
