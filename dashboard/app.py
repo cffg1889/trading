@@ -207,7 +207,7 @@ Paragraph 2 — FUNDAMENTAL VIEW: Synthesise the analyst reports above into a co
                 f"TECHNICAL: BX at ${price:.2f}, {((price/sma200-1)*100):+.1f}% vs SMA200 (${sma200:.2f}) — {trend} territory.{channel_note} "
                 f"EMA20 at ${ema20:.2f} is the immediate resistance to reclaim. RSI {rsi_d:.0f} with MACD {'bullish crossover' if macd > sig else 'bearish'}. "
                 f"ATR ${atr:.2f} implies ±{atr/price*100:.1f}% daily range.\n\n"
-                f"FUNDAMENTAL: {news_ctx.split(chr(10))[0] if recent_news else 'No material news in the last 24 hours.'}"
+                f"FUNDAMENTAL: {analyst_ctx.split(chr(10))[0] if analyst_items else 'No material news in the last 5 days.'}"
             )
 
     # Render: split into TECHNICAL / FUNDAMENTAL paragraphs
