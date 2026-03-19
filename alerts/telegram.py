@@ -222,20 +222,42 @@ ${price:.2f}  {arrow} {abs(change_pct):.2f}% in last 15 min
     await _send_message(text)
 
 
-def send_news_alert(title: str, source: str, url: str, sentiment: str):
+def send_news_alert(title: str, source: str, url: str, sentiment: str, impact: int = 3):
     """Send a breaking news alert."""
-    asyncio.run(_async_news_alert(title, source, url, sentiment))
+    asyncio.run(_async_news_alert(title, source, url, sentiment, impact))
 
 
-async def _async_news_alert(title, source, url, sentiment):
-    label = {"bullish": "[BULLISH]", "bearish": "[BEARISH]", "neutral": "[NEWS]"}.get(sentiment, "[NEWS]")
+async def _async_news_alert(title, source, url, sentiment, impact=3):
+    emoji  = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}.get(sentiment, "⚪")
+    label  = {"bullish": "BULLISH", "bearish": "BEARISH", "neutral": "NEWS"}.get(sentiment, "NEWS")
+    stars  = "★" * impact + "☆" * (5 - impact)
     ip = _get_local_ip()
-    text = f"""{label} <b>BREAKING: BX</b>
+    text = f"""{emoji} <b>BX {label}</b>  {stars}
 
 <a href="{url}">{title}</a>
 <i>{source}</i>
 
 <a href="http://{ip}:{config.DASH_PORT}">Dashboard</a>"""
+    await _send_message(text)
+
+
+def send_rsi_alert(rsi: float, state: str, price: float):
+    """Send RSI extreme alert (oversold / overbought)."""
+    asyncio.run(_async_rsi_alert(rsi, state, price))
+
+
+async def _async_rsi_alert(rsi: float, state: str, price: float):
+    emoji = "🟢" if state == "oversold" else "🔴"
+    label = "OVERSOLD" if state == "oversold" else "OVERBOUGHT"
+    note  = "Potential buying opportunity" if state == "oversold" else "Potential selling pressure"
+    ip = _get_local_ip()
+    text = f"""{emoji} <b>BX RSI {label}</b>
+
+RSI: <b>{rsi:.1f}</b>  (threshold: {'&lt;' if state == 'oversold' else '&gt;'}{config.RSI_OVERSOLD if state == 'oversold' else config.RSI_OVERBOUGHT})
+Price: <b>${price:.2f}</b>
+{note}
+
+<a href="http://{ip}:{config.DASH_PORT}">View Dashboard</a>"""
     await _send_message(text)
 
 
