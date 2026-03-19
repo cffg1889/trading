@@ -59,107 +59,169 @@ CHART_TEMPLATE = {
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
-def build_snapshot(df, levels, news_items, rsi_h_last=None) -> html.Div:
+def build_snapshot(df, levels, news_items, rsi_h_last=None, channel=None) -> html.Div:
     """
-    Generate a concise technical + fundamental snapshot using Claude API.
-    Cached for 1 hour to avoid excessive API calls.
+    Claude-powered snapshot: opinionated TECHNICAL + FUNDAMENTAL (last 24h news).
+    Cached per hour. Uses claude-opus-4-6 with adaptive thinking.
     """
     import anthropic
     import hashlib
 
-    # Build context for Claude
-    rsi_d = levels["rsi"]
-    macd_bull = levels["macd"] > levels["macd_signal"]
-    bb_pct = df["bb_pct"].iloc[-1] if "bb_pct" in df.columns else 0.5
-    ema20 = df["ema20"].iloc[-1]
-    ema50 = df["ema50"].iloc[-1]
-    price = levels["current"]
+    price  = levels["current"]
+    rsi_d  = levels["rsi"]
+    macd   = levels["macd"]
+    sig    = levels["macd_signal"]
+    ema20  = df["ema20"].iloc[-1]
+    ema50  = df["ema50"].iloc[-1]
+    sma200 = df["sma200"].iloc[-1]
+    bb_pct = df["bb_pct"].iloc[-1] * 100 if "bb_pct" in df.columns else 50
+    bb_up  = df["bb_upper"].iloc[-1]
+    bb_lo  = df["bb_lower"].iloc[-1]
+    atr    = levels["atr"]
+    sup    = [f"${s:.2f}" for s in levels["supports"][:3]]
+    res    = [f"${r:.2f}" for r in levels["resistances"][:3]]
+    chg_5d = ((df["close"].iloc[-1] / df["close"].iloc[-6]) - 1) * 100 if len(df) > 6 else 0
+    chg_1m = ((df["close"].iloc[-1] / df["close"].iloc[-22]) - 1) * 100 if len(df) > 22 else 0
 
-    top_news = "\n".join([
-        f"- [{it.source}] {it.title} (sentiment: {it.sentiment})"
-        for it in sorted(news_items, key=lambda x: x.impact, reverse=True)[:8]
-    ]) if news_items else "No recent news available."
+    # Channel position
+    channel_ctx = ""
+    if channel:
+        try:
+            ch = channel[-1]  # most recent channel
+            upper_last = ch["upper_y"][-1] if hasattr(ch["upper_y"], "__getitem__") else ch.get("upper_y", [price])
+            lower_last = ch["lower_y"][-1] if hasattr(ch["lower_y"], "__getitem__") else ch.get("lower_y", [price])
+            if isinstance(upper_last, (list, tuple)): upper_last = upper_last[-1]
+            if isinstance(lower_last, (list, tuple)): lower_last = lower_last[-1]
+            in_channel = lower_last <= price <= upper_last
+            above = price > upper_last
+            channel_ctx = (
+                f"- Descending channel ({ch.get('label','')}: upper ~${upper_last:.2f}, lower ~${lower_last:.2f}): "
+                f"price is {'ABOVE the channel (breakout)' if above else 'INSIDE the channel' if in_channel else 'BELOW the channel'}"
+            )
+        except Exception:
+            pass
 
-    prompt = f"""You are a senior equity analyst. Provide a concise, actionable snapshot for a large Blackstone (BX) shareholder. Be direct and insightful. No fluff.
+    # Last 24h news only for fundamental paragraph
+    from datetime import timedelta
+    from dateutil import parser as dp
+    cutoff_24h = datetime.now() - timedelta(hours=24)
+    recent_news = []
+    for it in news_items:
+        try:
+            pub = dp.parse(it.published).replace(tzinfo=None)
+            if pub > cutoff_24h:
+                recent_news.append(it)
+        except Exception:
+            pass
+    recent_news.sort(key=lambda x: x.impact, reverse=True)
 
-TECHNICAL DATA (as of today):
-- Price: ${price:.2f}
-- RSI Daily: {rsi_d:.1f} {'(oversold)' if rsi_d < 30 else '(overbought)' if rsi_d > 70 else '(neutral)'}
-- RSI 1H: {f'{rsi_h_last:.1f}' if rsi_h_last else 'N/A'} {'(overbought - short term caution)' if rsi_h_last and rsi_h_last > 70 else ''}
-- MACD: {'Bullish crossover' if macd_bull else 'Bearish - below signal line'}
-- BB Position: {bb_pct*100:.0f}% of band (0%=lower band, 100%=upper band)
-- Price vs EMA20: {'above' if price > ema20 else 'below'} (${ema20:.2f})
-- Price vs EMA50: {'above' if price > ema50 else 'below'} (${ema50:.2f})
-- 52W High: ${levels['52w_high']:.2f} | 52W Low: ${levels['52w_low']:.2f}
-- ATR: ${levels['atr']:.2f}
+    news_ctx = "\n".join([
+        f"- [{it.source} | {it.sentiment}] {it.title}"
+        for it in recent_news[:10]
+    ]) if recent_news else "No news published in the last 24 hours."
 
-RECENT NEWS & FILINGS:
-{top_news}
+    prompt = f"""You are a senior sell-side equity analyst writing a real-time flash note on Blackstone (BX) for an experienced investor. Be specific, opinionated, and data-driven. No generic statements. Every sentence must reference actual numbers.
 
-Write exactly 3 short paragraphs with these headers:
-**TECHNICAL:** [2-3 sentences on price action, trend, key levels, what to watch]
-**FUNDAMENTAL:** [2-3 sentences from the news above - filings, analyst moves, management activity]
-**CONCLUSION:** [1-2 sentences: clear actionable view - what should the shareholder do or watch for]"""
+PRICE ACTION:
+- Current: ${price:.2f}  |  5d: {chg_5d:+.1f}%  |  1m: {chg_1m:+.1f}%
+- 52W range: ${levels['52w_low']:.2f} – ${levels['52w_high']:.2f}  (currently {((price - levels['52w_low']) / (levels['52w_high'] - levels['52w_low']) * 100):.0f}% of range)
 
-    # Cache key based on daily data (don't call Claude more than once per hour)
-    cache_key = hashlib.md5(f"{price:.0f}{rsi_d:.0f}{datetime.now().strftime('%Y%m%d%H')}".encode()).hexdigest()[:8]
+TECHNICALS:
+- RSI(14) daily: {rsi_d:.1f}  |  RSI(14) hourly: {f"{rsi_h_last:.1f}" if rsi_h_last else "n/a"}
+- MACD: {"bullish crossover" if macd > sig else "bearish, below signal"} (MACD {macd:.3f} vs Signal {sig:.3f})
+- Bollinger Band: {bb_pct:.0f}% of band  (lower ${bb_lo:.2f} / upper ${bb_up:.2f})
+- EMA20: ${ema20:.2f} ({'price above' if price > ema20 else 'price below — key resistance to reclaim'})
+- EMA50: ${ema50:.2f} ({'price above' if price > ema50 else 'price below'})
+- SMA200: ${sma200:.2f} ({'price above' if price > sma200 else 'price below — in bearish territory'})
+- ATR: ${atr:.2f}
+{channel_ctx}
+- Key supports: {', '.join(sup)}
+- Key resistances: {', '.join(res)}
+
+NEWS LAST 24H:
+{news_ctx}
+
+Write exactly 2 paragraphs. No other text.
+
+TECHNICAL: Express a clear, opinionated view on where BX stands right now. Reference the channel, the moving averages, RSI, MACD. State what the next key catalyst or level is. Be specific — name exact prices.
+
+FUNDAMENTAL: Summarize what actually happened in the last 24 hours from the news above. If there are insider trades, analyst moves, or filings — lead with those. If nothing happened, say so plainly."""
+
+    # Cache per hour (keyed by price + RSI + hour)
+    cache_key = hashlib.md5(
+        f"{price:.0f}{rsi_d:.0f}{datetime.now().strftime('%Y%m%d%H')}".encode()
+    ).hexdigest()[:10]
 
     snapshot_text = ""
     db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "db", "bx.db"))
 
+    # Check cache
     try:
         conn = sqlite3.connect(db_path)
         conn.execute("CREATE TABLE IF NOT EXISTS snapshot_cache (key TEXT PRIMARY KEY, text TEXT, ts TEXT)")
-        row = conn.execute("SELECT text, ts FROM snapshot_cache WHERE key=?", (cache_key,)).fetchone()
+        row = conn.execute("SELECT text FROM snapshot_cache WHERE key=?", (cache_key,)).fetchone()
         if row:
             snapshot_text = row[0]
         conn.close()
     except Exception:
         pass
 
+    # Call Claude if not cached
     if not snapshot_text:
         try:
             client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
-            msg = client.messages.create(
-                model="claude-3-5-haiku-20241022",
-                max_tokens=400,
-                messages=[{"role": "user", "content": prompt}]
-            )
-            snapshot_text = msg.content[0].text
-            # Cache it
+            with client.messages.stream(
+                model="claude-opus-4-6",
+                max_tokens=500,
+                thinking={"type": "adaptive"},
+                messages=[{"role": "user", "content": prompt}],
+            ) as stream:
+                final = stream.get_final_message()
+            snapshot_text = next(b.text for b in final.content if b.type == "text")
+            # Save to cache
             try:
                 conn = sqlite3.connect(db_path)
-                conn.execute("CREATE TABLE IF NOT EXISTS snapshot_cache (key TEXT PRIMARY KEY, text TEXT, ts TEXT)")
                 conn.execute("INSERT OR REPLACE INTO snapshot_cache VALUES (?,?,?)",
-                           (cache_key, snapshot_text, datetime.now().isoformat()))
+                             (cache_key, snapshot_text, datetime.now().isoformat()))
                 conn.commit()
                 conn.close()
             except Exception:
                 pass
         except Exception as e:
-            snapshot_text = f"**TECHNICAL:** RSI {rsi_d:.0f} {'oversold' if rsi_d < 30 else 'overbought' if rsi_d > 70 else 'neutral'}. Price ${price:.2f}, {'above' if price > ema20 else 'below'} EMA20. MACD {'bullish' if macd_bull else 'bearish'}.\n\n**FUNDAMENTAL:** See news thread below for latest filings and analyst activity.\n\n**CONCLUSION:** Monitor key levels. {'Watch for reversal from oversold.' if rsi_d < 35 else 'Short-term caution with hourly RSI elevated.' if rsi_h_last and rsi_h_last > 70 else 'Hold current position.'}"
+            # Meaningful fallback (no generic placeholders)
+            trend = "bearish" if price < sma200 else "bullish"
+            channel_note = " Price has broken above the descending channel." if channel_ctx and "breakout" in channel_ctx else ""
+            snapshot_text = (
+                f"TECHNICAL: BX at ${price:.2f}, {((price/sma200-1)*100):+.1f}% vs SMA200 (${sma200:.2f}) — {trend} territory.{channel_note} "
+                f"EMA20 at ${ema20:.2f} is the immediate resistance to reclaim. RSI {rsi_d:.0f} with MACD {'bullish crossover' if macd > sig else 'bearish'}. "
+                f"ATR ${atr:.2f} implies ±{atr/price*100:.1f}% daily range.\n\n"
+                f"FUNDAMENTAL: {news_ctx.split(chr(10))[0] if recent_news else 'No material news in the last 24 hours.'}"
+            )
 
-    # Parse and render
-    paragraphs = re.split(r'\n\n+', snapshot_text.strip())
-
-    def render_para(text):
-        # Bold the header
-        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+    # Render: split into TECHNICAL / FUNDAMENTAL paragraphs
+    def render_para(text: str):
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text).strip()
+        # Split on first colon to separate header from body
         parts = text.split(':', 1)
         if len(parts) == 2:
             return html.P([
-                html.Strong(parts[0] + ": ", style={"color": COLORS["blue"]}),
-                parts[1].strip()
-            ], style={"margin": "4px 0", "fontSize": "0.82rem", "lineHeight": "1.5"})
-        return html.P(text, style={"margin": "4px 0", "fontSize": "0.82rem"})
+                html.Strong(parts[0].strip() + ": ",
+                           style={"color": COLORS["blue"], "fontWeight": "700"}),
+                parts[1].strip(),
+            ], style={"margin": "6px 0", "fontSize": "0.83rem", "lineHeight": "1.6"})
+        return html.P(text, style={"margin": "6px 0", "fontSize": "0.83rem", "lineHeight": "1.6"})
+
+    paragraphs = [p.strip() for p in re.split(r'\n\n+', snapshot_text.strip()) if p.strip()]
 
     return html.Div([
         html.Div([
-            html.Span("📊 MARKET INTELLIGENCE SNAPSHOT",
-                     style={"color": COLORS["muted"], "fontSize": "0.7rem",
+            html.Span("📊 AI SNAPSHOT",
+                     style={"color": COLORS["muted"], "fontSize": "0.68rem",
                             "fontWeight": "700", "letterSpacing": "1px",
                             "textTransform": "uppercase"}),
-            html.Div([render_para(p) for p in paragraphs if p.strip()],
+            html.Span(f" — {datetime.now().strftime('%H:%M ET')}",
+                     style={"color": COLORS["muted"], "fontSize": "0.68rem"}),
+            html.Div([render_para(p) for p in paragraphs],
                     style={"color": COLORS["text"], "marginTop": "6px"}),
         ], style={
             "padding": "12px 16px",
@@ -359,7 +421,7 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         rsi_h_last = float(rsi_h.iloc[-1]) if len(rsi_h) else None
         kpis = build_kpi_cards(df, levels, quote, rsi_h_last)
         news_items = fetch_all_news(hours_back=120)
-        snapshot = build_snapshot(df, levels, news_items, rsi_h_last)
+        snapshot = build_snapshot(df, levels, news_items, rsi_h_last, channel)
         thread = build_news_thread(news_items)
         return fig, price_component, signal, signal_color, kpis, snapshot, thread
     except Exception as e:
