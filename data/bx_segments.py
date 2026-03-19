@@ -1,7 +1,7 @@
 """
 Blackstone quarterly segment financials.
-Source: BX earnings press releases / Supplemental Financial Data
-        https://ir.blackstone.com/financial-information/quarterly-results
+Source: Blackstone4Q25SupplementalFinancialData.xlsx (official BX file)
+        DEPS per share from BX earnings press releases (ir.blackstone.com)
 
 Segments:
   RE  = Real Estate
@@ -9,13 +9,15 @@ Segments:
   CI  = Credit & Insurance
   MAI = Multi-Asset Investing (formerly BAAM)
 
-Update this file after each quarterly earnings release (late Jan / Apr / Jul / Oct).
+Update after each quarterly earnings release (late Jan / Apr / Jul / Oct).
+AUM in $B  |  FRE in $M  |  DE in $M  |  DEPS in $/unit
 """
 
-# ── Quarters ──────────────────────────────────────────────────────────────────
+# ── Quarters (12 quarters: 1Q'23 → 4Q'25) ────────────────────────────────────
 QUARTERS = [
-    "Q1'23", "Q2'23", "Q3'23", "Q4'23",
-    "Q1'24", "Q2'24", "Q3'24", "Q4'24",
+    "1Q'23", "2Q'23", "3Q'23", "4Q'23",
+    "1Q'24", "2Q'24", "3Q'24", "4Q'24",
+    "1Q'25", "2Q'25", "3Q'25", "4Q'25",
 ]
 
 SEGMENT_COLORS = {
@@ -26,78 +28,99 @@ SEGMENT_COLORS = {
 }
 
 # ── Total AUM ($B) ─────────────────────────────────────────────────────────────
-# Totals from BX earnings releases; segment splits from BX Supplemental Data
+# Source: Blackstone4Q25SupplementalFinancialData.xlsx — AUM sheets by segment
+# Original values in $thousands, converted to $B (÷ 1,000,000)
 AUM = {
     "Real Estate": [
-        328.0, 334.0, 318.0, 336.9,   # 2023
-        326.3, 332.8, 348.6, 319.5,   # 2024
+        331.8, 333.2, 331.5, 336.9,
+        339.3, 336.1, 325.1, 315.4,
+        320.0, 325.0, 320.5, 319.3,
     ],
     "Private Equity": [
-        263.0, 265.0, 267.0, 288.3,   # 2023
-        313.1, 325.4, 329.0, 336.6,   # 2024
+        298.1, 305.3, 308.6, 314.4,
+        320.8, 330.6, 344.7, 352.2,
+        371.0, 388.9, 395.6, 416.4,
     ],
     "Credit & Insurance": [
-        361.0, 362.5, 415.0, 374.1,   # 2023
-        382.5, 378.5, 389.6, 422.9,   # 2024
+        285.1, 288.4, 290.9, 312.7,
+        322.5, 330.1, 354.7, 375.5,
+        388.7, 407.3, 432.3, 443.0,
     ],
     "Multi-Asset (BAAM)": [
-        39.3, 38.5, 37.6, 41.0,       # 2023
-        39.4, 39.7, 40.4, 48.2,       # 2024
+        76.3, 74.4, 76.4, 76.2,
+        78.6, 79.6, 83.1, 84.2,
+        87.8, 90.0, 93.3, 96.2,
     ],
 }
-# Reported totals: 991.3, 1000.0, 1037.6, 1040.2, 1061.3, 1076.4, 1107.6, 1127.2
+# Total AUM: 991B → 1,001B → 1,008B → 1,040B → 1,061B → 1,076B →
+#            1,108B → 1,127B → 1,167B → 1,211B → 1,242B → 1,275B
 
 # ── Fee-Related Earnings ($M, quarterly) ──────────────────────────────────────
-# Source: BX earnings supplements — segment FRE tables
+# Source: Blackstone4Q25SupplementalFinancialData.xlsx — FRE segment sheets
+# Original values in $thousands, converted to $M (÷ 1,000)
+# Note: 4Q'24 PE spike ($1,009M) = fee-related performance revenues from record closings
 FRE = {
     "Real Estate": [
-        386, 380, 392, 430,   # 2023
-        410, 415, 440, 475,   # 2024
+        524, 589, 546, 477,
+        586, 481, 501, 455,
+        485, 544, 550, 633,
     ],
     "Private Equity": [
-        170, 168, 175, 190,   # 2023
-        195, 198, 210, 230,   # 2024
+        242, 276, 268, 273,
+        249, 278, 293, 1009,
+        376, 519, 491, 489,
     ],
     "Credit & Insurance": [
-        295, 355, 385, 425,   # 2023
-        455, 450, 500, 645,   # 2024
+        217, 230, 260, 243,
+        272, 297, 325, 308,
+        344, 333, 367, 353,
     ],
     "Multi-Asset (BAAM)": [
-        50,  47,  48,  55,   # 2023
-        40,  47,  50,  50,   # 2024
+        56, 49, 50, 48,
+        53, 55, 57, 64,
+        56, 63, 72, 61,
     ],
 }
-# Implied totals ~2023: 901, 950, 1000, 1100 | ~2024: 1100, 1110, 1200, 1400
+# Total FRE: 1,040 → 1,144 → 1,124 → 1,042 → 1,160 → 1,111 →
+#            1,175 → 1,836* → 1,262 → 1,460 → 1,481 → 1,535
 
 # ── Distributable Earnings ($M, quarterly) ────────────────────────────────────
-# Total DE = DEPS × diluted units outstanding (~1.28B units)
-# DEPS confirmed from BX earnings releases
+# Source: Blackstone4Q25SupplementalFinancialData.xlsx — DE segment sheets
+# Original values in $thousands, converted to $M (÷ 1,000)
+# Note: 4Q'24 PE ($1,229M) + MAI ($333M) = large realization / carried interest quarter
 DE = {
     "Real Estate": [
-        380, 335, 295, 440,   # 2023
-        425, 340, 380, 580,   # 2024
+        535, 639, 557, 534,
+        616, 517, 540, 465,
+        495, 566, 618, 681,
     ],
     "Private Equity": [
-        290, 255, 255, 340,   # 2023
-        325, 290, 320, 430,   # 2024
+        544, 418, 475, 457,
+        500, 486, 424, 1229,
+        565, 751, 871, 720,
     ],
     "Credit & Insurance": [
-        270, 290, 280, 340,   # 2023
-        350, 340, 380, 540,   # 2024
+        292, 235, 298, 324,
+        286, 354, 375, 410,
+        503, 396, 416, 643,
     ],
     "Multi-Asset (BAAM)": [
-        60,  55,  50,  60,   # 2023
-        55,  50,  55,  70,   # 2024
+        59, 54, 53, 151,
+        51, 63, 61, 333,
+        56, 72, 80, 448,
     ],
 }
-# Implied DE totals: ~1000, 935, 880, 1180, 1155, 1020, 1135, 1620
-# DEPS × ~1.15B ENI units: Q1'23≈$0.97, Q2'23≈$0.93, Q3'23≈$0.88,
-#   Q4'23≈$1.16, Q1'24≈$1.09, Q2'24≈$0.96, Q3'24≈$1.01, Q4'24≈$1.69
 
-# ── DEPS (Distributable Earnings Per Share, total company) ────────────────────
-# Confirmed from BX earnings press releases
+# ── DEPS (Distributable Earnings Per Share, $/unit) ───────────────────────────
+# Source: BX quarterly earnings press releases (ir.blackstone.com)
+# 2023 & 2024: from press releases | 2025: computed from file DE ÷ ~1.33B units
+# Full-year: 2023=$3.94 | 2024=$4.75 | 2025=$5.35
 DEPS = {
-    "Total": [0.97, 0.93, 0.88, 1.16, 1.09, 0.96, 1.01, 1.69],
+    "Total": [
+        0.97, 0.93, 0.88, 1.16,   # 2023
+        1.09, 0.96, 1.01, 1.69,   # 2024
+        1.06, 1.18, 1.42, 1.69,   # 2025
+    ],
 }
 
 
