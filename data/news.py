@@ -789,9 +789,26 @@ def fetch_all_news(hours_back: int = 48, force: bool = False) -> List[NewsItem]:
         return sorted(fetch_rss_news(hours_back) + fetch_edgar_filings(30),
                       key=lambda x: x.impact, reverse=True)[:30]
 
-    # Deduplicate — preserve date order (cache already sorted by fetched_at DESC)
+    # Parse published date for each item (used for filtering + sorting)
+    def _pub_dt(item: NewsItem) -> datetime:
+        try:
+            from dateutil import parser as dp
+            dt = dp.parse(item.published)
+            return dt.replace(tzinfo=None)
+        except Exception:
+            return datetime.min
+
+    # Filter by PUBLISHED date (not fetch date) — only last hours_back hours
+    pub_cutoff = datetime.now() - timedelta(hours=hours_back)
+    dated = [(it, _pub_dt(it)) for it in cached]
+    dated = [(it, dt) for it, dt in dated if dt > pub_cutoff]
+
+    # Sort by published date DESC (newest first)
+    dated.sort(key=lambda x: x[1], reverse=True)
+
+    # Deduplicate
     seen, unique = set(), []
-    for it in cached:
+    for it, _ in dated:
         key = re.sub(r"[^a-z0-9]", "", it.title.lower())[:50]
         if key not in seen:
             seen.add(key)
