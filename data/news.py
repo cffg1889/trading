@@ -29,7 +29,7 @@ SOURCE_ICONS = {
     "WSJ":          "📰",
     "LinkedIn":     "💼",
     "Yahoo Finance":"📊",
-    "Google News":  "🌐",
+
     "Reuters":      "🌐",
     "Seeking Alpha":"📈",
     "Other":        "🌐",
@@ -183,10 +183,6 @@ def _load_cached(hours_back: int = 120) -> List[NewsItem]:
 
 RSS_FEEDS = {
     "Yahoo Finance":   "https://feeds.finance.yahoo.com/rss/2.0/headline?s=BX&region=US&lang=en-US",
-    "Google News BX":  "https://news.google.com/rss/search?q=Blackstone+BX+NYSE&hl=en-US&gl=US&ceid=US:en",
-    "Google News Mgmt":"https://news.google.com/rss/search?q=Jon+Gray+OR+Schwarzman+Blackstone&hl=en-US&gl=US&ceid=US:en",
-    "Google News BREIT":"https://news.google.com/rss/search?q=BREIT+Blackstone+real+estate&hl=en-US&gl=US&ceid=US:en",
-    "Google News PE":  "https://news.google.com/rss/search?q=Blackstone+private+equity+fund&hl=en-US&gl=US&ceid=US:en",
     "Seeking Alpha BX":"https://seekingalpha.com/symbol/BX.xml",
     "Reuters":         "https://feeds.reuters.com/reuters/businessNews",
     "CNBC Finance":    "https://www.cnbc.com/id/10000664/device/rss/rss.html",
