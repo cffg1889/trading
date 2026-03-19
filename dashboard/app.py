@@ -59,6 +59,85 @@ CHART_TEMPLATE = {
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
+def build_intraday_chart() -> go.Figure:
+    """3-day 5-min candlestick including pre/post market, for the snapshot panel."""
+    import yfinance as yf
+    ticker = yf.Ticker(config.TICKER)
+    # prepost=True includes pre-market and after-hours
+    df = ticker.history(period="5d", interval="5m", prepost=True)
+    df.index = pd.to_datetime(df.index)
+
+    # Keep last 3 calendar days
+    if not df.empty:
+        cutoff = df.index[-1].normalize() - pd.Timedelta(days=3)
+        df = df[df.index >= cutoff]
+
+    fig = go.Figure()
+
+    if df.empty:
+        fig.update_layout(template="plotly_dark", paper_bgcolor=COLORS["bg"],
+                          plot_bgcolor=COLORS["bg"])
+        return fig
+
+    # Colour each candle: green up / red down
+    colors_up   = COLORS["up"]
+    colors_down = COLORS["down"]
+    candle_colors = [colors_up if c >= o else colors_down
+                     for c, o in zip(df["Close"], df["Open"])]
+
+    fig.add_trace(go.Candlestick(
+        x=df.index,
+        open=df["Open"], high=df["High"],
+        low=df["Low"],   close=df["Close"],
+        increasing_line_color=colors_up,  decreasing_line_color=colors_down,
+        increasing_fillcolor=colors_up,   decreasing_fillcolor=colors_down,
+        line_width=1,
+        showlegend=False,
+        name="BX 5m",
+    ))
+
+    # Shade pre/post market sessions (before 9:30 or after 16:00 ET)
+    import pytz
+    et = pytz.timezone("America/New_York")
+    try:
+        idx_et = df.index.tz_convert(et) if df.index.tzinfo else df.index.tz_localize("UTC").tz_convert(et)
+        pre_post_mask = (idx_et.hour < 9) | ((idx_et.hour == 9) & (idx_et.minute < 30)) | (idx_et.hour >= 16)
+        if pre_post_mask.any():
+            fig.add_trace(go.Scatter(
+                x=df.index[pre_post_mask],
+                y=df["High"][pre_post_mask],
+                mode="markers",
+                marker=dict(size=2, color=COLORS["muted"], opacity=0.4),
+                showlegend=False,
+                hoverinfo="skip",
+            ))
+    except Exception:
+        pass
+
+    # Current price line
+    last_close = df["Close"].iloc[-1]
+    fig.add_hline(y=last_close, line_width=1, line_dash="dot",
+                  line_color=COLORS["yellow"], opacity=0.8)
+
+    fig.update_layout(
+        margin=dict(l=0, r=4, t=4, b=0),
+        paper_bgcolor=COLORS["bg"],
+        plot_bgcolor=COLORS["bg"],
+        xaxis=dict(
+            showgrid=False, zeroline=False, showticklabels=False,
+            rangeslider=dict(visible=False),
+        ),
+        yaxis=dict(
+            showgrid=True, gridcolor=COLORS["border"], zeroline=False,
+            tickfont=dict(size=9, color=COLORS["muted"]),
+            side="right",
+        ),
+        height=160,
+        hovermode="x unified",
+    )
+    return fig
+
+
 def build_snapshot(df, levels, news_items, rsi_h_last=None, channel=None) -> html.Div:
     """
     Claude-powered snapshot: opinionated TECHNICAL + FUNDAMENTAL (last 24h news).
@@ -346,10 +425,26 @@ def build_layout():
             ]),
         ], className="px-2 mb-2"),
 
-        # Snapshot bar
+        # Snapshot bar + intraday mini chart
         dbc.Row([
-            dbc.Col(html.Div(id="snapshot-bar"), className="px-2")
-        ], className="mb-2"),
+            dbc.Col(html.Div(id="snapshot-bar"), xs=12, md=7, className="px-2"),
+            dbc.Col([
+                html.Div([
+                    html.Span("3D INTRADAY  ·  5m  ·  PRE/POST MARKET",
+                             style={"color": COLORS["muted"], "fontSize": "0.65rem",
+                                    "fontWeight": "700", "letterSpacing": "1px"}),
+                    dcc.Graph(id="intraday-chart",
+                              config={"displayModeBar": False, "responsive": True},
+                              style={"height": "160px"}),
+                ], style={
+                    "backgroundColor": COLORS["card"],
+                    "borderRadius": "8px",
+                    "borderLeft": f"3px solid {COLORS['yellow']}",
+                    "padding": "10px 8px 4px 10px",
+                    "marginTop": "0px",
+                })
+            ], xs=12, md=5, className="px-2"),
+        ], className="mb-2 align-items-stretch"),
 
         # ── MAIN CHART ─────────────────────────────────────────────────────────
         dbc.Row([
@@ -401,6 +496,7 @@ app.layout = build_layout()
     Output("kpi-cards", "children"),
     Output("snapshot-bar", "children"),
     Output("news-thread", "children"),
+    Output("intraday-chart", "figure"),
     Input("refresh-interval", "n_intervals"),
     Input("btn-1m", "n_clicks"),
     Input("btn-3m", "n_clicks"),
@@ -435,12 +531,13 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         news_items = fetch_all_news(hours_back=120)
         snapshot = build_snapshot(df, levels, news_items, rsi_h_last, channel)
         thread = build_news_thread(news_items)
-        return fig, price_component, signal, signal_color, kpis, snapshot, thread
+        intraday_fig = build_intraday_chart()
+        return fig, price_component, signal, signal_color, kpis, snapshot, thread, intraday_fig
     except Exception as e:
         import traceback; traceback.print_exc()
         empty_fig = go.Figure()
         empty_fig.update_layout(template="plotly_dark", paper_bgcolor=COLORS["bg"])
-        return empty_fig, f"Error: {e}", "ERROR", "danger", [], [], []
+        return empty_fig, f"Error: {e}", "ERROR", "danger", [], [], [], empty_fig
 
 
 def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
