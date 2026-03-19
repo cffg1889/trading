@@ -459,6 +459,22 @@ def get_implied_volatility() -> dict:
     }
 
 
+def get_hourly_rsi(window: int = 14) -> pd.Series:
+    """
+    Fetch 60-day 1H OHLCV for BX and return the RSI-14 series on hourly bars.
+    Identical Wilder method to the daily RSI — only the bar interval differs.
+    This matches exactly what Saxo Bank shows on their 1H chart.
+    """
+    ticker = yf.Ticker(config.TICKER)
+    df_h = ticker.history(period="60d", interval="1h", auto_adjust=True)
+    if df_h.empty:
+        return pd.Series(dtype=float)
+    df_h.index = pd.to_datetime(df_h.index, utc=True).tz_convert("America/New_York")
+    close = df_h["Close"]
+    rsi_h = RSIIndicator(close, window=window).rsi()
+    return rsi_h.dropna()
+
+
 def get_current_quote() -> dict:
     """Get real-time quote for BX."""
     ticker = yf.Ticker(config.TICKER)

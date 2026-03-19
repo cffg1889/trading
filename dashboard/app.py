@@ -12,7 +12,7 @@ import numpy as np
 from datetime import datetime
 import threading
 
-from data.price import get_price_data, get_key_levels, get_current_quote, get_channel_lines, get_short_interest, get_implied_volatility, get_realized_volatility
+from data.price import get_price_data, get_key_levels, get_current_quote, get_channel_lines, get_short_interest, get_implied_volatility, get_realized_volatility, get_hourly_rsi
 from data.fundamentals import get_fundamentals, get_analyst_ratings, get_earnings_history, get_peer_comparison
 from data.news import fetch_all_news
 import config
@@ -157,10 +157,12 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         short = get_short_interest()
         ivol  = get_implied_volatility()
         rv    = get_realized_volatility(df)
-        fig = build_chart(df, levels, channel, short, ivol, rv)
+        rsi_h = get_hourly_rsi()
+        fig = build_chart(df, levels, channel, short, ivol, rv, rsi_h)
         price_component = build_price_header(quote)
         signal, signal_color = compute_signal(df, levels)
-        kpis = build_kpi_cards(df, levels, quote)
+        rsi_h_last = float(rsi_h.iloc[-1]) if len(rsi_h) else None
+        kpis = build_kpi_cards(df, levels, quote, rsi_h_last)
         return fig, price_component, signal, signal_color, kpis
     except Exception as e:
         import traceback; traceback.print_exc()
@@ -170,7 +172,8 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
 
 
 def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
-                short: dict = None, ivol: dict = None, rv: "pd.Series" = None) -> go.Figure:
+                short: dict = None, ivol: dict = None, rv: "pd.Series" = None,
+                rsi_h: "pd.Series" = None) -> go.Figure:
     """Build the comprehensive 6-panel technical analysis chart."""
 
     # 6 rows: Price (46%), Volume (11%), RSI (10%), MACD (11%), Short Interest (11%), IV (11%)
@@ -179,7 +182,7 @@ def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
         shared_xaxes=True,
         vertical_spacing=0.018,
         row_heights=[0.46, 0.11, 0.10, 0.11, 0.11, 0.11],
-        subplot_titles=("", "Volume", "RSI (14)", "MACD (12/26/9)",
+        subplot_titles=("", "Volume", "RSI 14 — Daily (blue) | Hourly (orange)", "MACD (12/26/9)",
                         "Short Interest % Float", "Volatility — 30d Realized (blue) vs IV (orange dots)"),
     )
 
@@ -296,14 +299,49 @@ def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
         line=dict(color=COLORS["orange"], width=1.2), showlegend=False,
     ), row=2, col=1)
 
-    # ── ROW 3: RSI ────────────────────────────────────────────────
+    # ── ROW 3: RSI — Daily + Hourly ───────────────────────────────
     rsi_val = df["rsi"].iloc[-1]
     rsi_color = COLORS["red"] if rsi_val > 70 else COLORS["green"] if rsi_val < 30 else COLORS["blue"]
+
+    # Daily RSI (solid blue line — matches Wilder 14 on 1D bars)
     fig.add_trace(go.Scatter(
-        x=df.index, y=df["rsi"], name=f"RSI {rsi_val:.0f}",
-        line=dict(color=rsi_color, width=1.5), showlegend=False,
+        x=df.index, y=df["rsi"],
+        name=f"RSI Daily {rsi_val:.0f}",
+        line=dict(color=COLORS["blue"], width=1.8),
+        showlegend=True,
+        hovertemplate="%{x|%b %d}: <b>%{y:.1f}</b> (daily)<extra></extra>",
     ), row=3, col=1)
-    # Zones
+
+    # Hourly RSI (orange dashed — matches what Saxo Bank shows on 1H chart)
+    if rsi_h is not None and len(rsi_h) > 0:
+        rsi_h_val = float(rsi_h.iloc[-1])
+        h_color = COLORS["red"] if rsi_h_val > 70 else COLORS["green"] if rsi_h_val < 30 else COLORS["orange"]
+        fig.add_trace(go.Scatter(
+            x=rsi_h.index, y=rsi_h.values,
+            name=f"RSI 1H {rsi_h_val:.0f}",
+            line=dict(color=COLORS["orange"], width=1.2, dash="dot"),
+            showlegend=True,
+            hovertemplate="%{x|%b %d %H:%M}: <b>%{y:.1f}</b> (1H)<extra></extra>",
+            opacity=0.85,
+        ), row=3, col=1)
+
+        # Label at the right edge showing both values
+        fig.add_annotation(
+            x=df.index[-1], y=rsi_h_val,
+            text=f" 1H: {rsi_h_val:.0f}",
+            showarrow=False, xanchor="left",
+            font=dict(color=COLORS["orange"], size=10),
+            row=3, col=1,
+        )
+        fig.add_annotation(
+            x=df.index[-1], y=rsi_val,
+            text=f" D: {rsi_val:.0f}",
+            showarrow=False, xanchor="left",
+            font=dict(color=COLORS["blue"], size=10),
+            row=3, col=1,
+        )
+
+    # Overbought / oversold zones
     fig.add_hrect(y0=70, y1=100, fillcolor="rgba(248,81,73,0.08)", line_width=0, row=3, col=1)
     fig.add_hrect(y0=0,  y1=30,  fillcolor="rgba(63,185,80,0.08)",  line_width=0, row=3, col=1)
     fig.add_hline(y=70, line_dash="dot", line_color=COLORS["red"],   line_width=0.8, row=3, col=1)
@@ -513,24 +551,61 @@ def build_price_header(quote: dict):
     ])
 
 
-def build_kpi_cards(df, levels, quote):
-    rsi = levels["rsi"]
-    rsi_color = "danger" if rsi > 70 else "success" if rsi < 30 else "info"
-    rsi_label = "Overbought" if rsi > 70 else "Oversold" if rsi < 30 else "Neutral"
+def build_kpi_cards(df, levels, quote, rsi_h_last=None):
+    # ── Daily RSI ─────────────────────────────────────────────────
+    rsi_d = levels["rsi"]
+    if rsi_d > 70:
+        rsi_d_label, rsi_d_color = "Overbought", "danger"
+    elif rsi_d > 60:
+        rsi_d_label, rsi_d_color = "Approaching OB", "warning"
+    elif rsi_d < 30:
+        rsi_d_label, rsi_d_color = "Oversold", "success"
+    elif rsi_d < 40:
+        rsi_d_label, rsi_d_color = "Recovering", "info"
+    else:
+        rsi_d_label, rsi_d_color = "Neutral", "info"
+
+    # ── Hourly RSI ────────────────────────────────────────────────
+    if rsi_h_last is not None:
+        if rsi_h_last > 70:
+            rsi_h_label, rsi_h_color = "⚠️ Overbought", "danger"
+        elif rsi_h_last < 30:
+            rsi_h_label, rsi_h_color = "Oversold", "success"
+        else:
+            rsi_h_label, rsi_h_color = "Neutral", "info"
+        rsi_h_text = f"{rsi_h_last:.0f} — {rsi_h_label}"
+    else:
+        rsi_h_text, rsi_h_color = "N/A", "secondary"
+
+    # ── Bollinger Band position ───────────────────────────────────
+    bb_pct  = df["bb_pct"].iloc[-1] if "bb_pct" in df.columns else 0.5
+    bb_upper = levels["bb_upper"]
+    bb_lower = levels["bb_lower"]
+    bb_dist_upper = levels["current"] - bb_upper
+    if bb_pct > 0.95:
+        bb_label, bb_color = "Above upper band", "danger"
+    elif bb_pct > 0.75:
+        bb_label, bb_color = "Near upper band", "warning"
+    elif bb_pct < 0.05:
+        bb_label, bb_color = "Below lower band", "success"
+    elif bb_pct < 0.25:
+        bb_label, bb_color = "Near lower band", "info"
+    else:
+        bb_label, bb_color = "Mid band", "secondary"
 
     vol_ratio = levels["volume_ratio"]
     vol_color = "warning" if vol_ratio > 1.5 else "secondary"
-
     macd_bull = levels["macd"] > levels["macd_signal"]
 
-    bb_pct = df["bb_pct"].iloc[-1] if "bb_pct" in df.columns else 0.5
-
     cards = [
-        ("RSI", f"{rsi:.0f} — {rsi_label}", rsi_color),
-        ("Volume", f"{vol_ratio:.1f}x avg", vol_color),
-        ("MACD", "Bullish" if macd_bull else "Bearish", "success" if macd_bull else "danger"),
-        ("ATR", f"${levels['atr']:.2f}", "secondary"),
-        ("BB%", f"{bb_pct*100:.0f}%", "info"),
+        ("RSI Daily",   f"{rsi_d:.0f} — {rsi_d_label}",           rsi_d_color),
+        ("RSI 1H",      rsi_h_text,                                 rsi_h_color),
+        ("BB Position", f"{bb_pct*100:.0f}% — {bb_label}",         bb_color),
+        ("Volume",      f"{vol_ratio:.1f}x avg",                    vol_color),
+        ("MACD",        "Bullish" if macd_bull else "Bearish",      "success" if macd_bull else "danger"),
+        ("ATR",         f"${levels['atr']:.2f}",                    "secondary"),
+        ("BB Upper",    f"${bb_upper:.2f} ({bb_dist_upper:+.1f})",  "warning" if bb_dist_upper > 0 else "info"),
+        ("BB Lower",    f"${bb_lower:.2f}",                         "info"),
         ("vs 52W High", f"-{((levels['52w_high'] - levels['current']) / levels['52w_high'] * 100):.0f}%", "danger"),
     ]
 
