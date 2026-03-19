@@ -101,51 +101,63 @@ def build_snapshot(df, levels, news_items, rsi_h_last=None, channel=None) -> htm
         except Exception:
             pass
 
-    # Last 24h news only for fundamental paragraph
+    # Build rich news context for fundamental — all 5 days, split by type
     from datetime import timedelta
     from dateutil import parser as dp
-    cutoff_24h = datetime.now() - timedelta(hours=24)
-    recent_news = []
-    for it in news_items:
+
+    def _pub_dt(it):
         try:
-            pub = dp.parse(it.published).replace(tzinfo=None)
-            if pub > cutoff_24h:
-                recent_news.append(it)
+            return dp.parse(it.published).replace(tzinfo=None)
         except Exception:
-            pass
-    recent_news.sort(key=lambda x: x.impact, reverse=True)
+            return datetime.min
 
-    news_ctx = "\n".join([
-        f"- [{it.source} | {it.sentiment}] {it.title}"
-        for it in recent_news[:10]
-    ]) if recent_news else "No news published in the last 24 hours."
+    def _fmt(it):
+        summary = it.summary.strip()[:250] if it.summary and it.summary.strip() else ""
+        body = f" — {summary}" if summary else ""
+        return f"- [{it.source} | {it.sentiment} | {it.time_ago}] {it.title}{body}"
 
-    prompt = f"""You are a senior sell-side equity analyst writing a real-time flash note on Blackstone (BX) for an experienced investor. Be specific, opinionated, and data-driven. No generic statements. Every sentence must reference actual numbers.
+    # Analyst reports & media (RSS, CNBC, WSJ, Seeking Alpha) — most impactful first
+    analyst_items = sorted(
+        [i for i in news_items if i.source_type in ("rss", "cnbc", "wsj")],
+        key=lambda x: (x.impact, _pub_dt(x)), reverse=True
+    )
+    # Filings & insider trades — most recent first
+    filing_items = sorted(
+        [i for i in news_items if i.source_type in ("sec", "insider", "ir")],
+        key=lambda x: _pub_dt(x), reverse=True
+    )
+
+    analyst_ctx = "\n".join([_fmt(i) for i in analyst_items[:10]]) or "None."
+    filing_ctx  = "\n".join([_fmt(i) for i in filing_items[:6]])  or "None."
+
+    prompt = f"""You are a senior sell-side equity analyst writing a real-time flash note on Blackstone (BX) for an experienced institutional investor. Be specific, opinionated, data-driven. No filler. Every claim must come from the data below.
 
 PRICE ACTION:
 - Current: ${price:.2f}  |  5d: {chg_5d:+.1f}%  |  1m: {chg_1m:+.1f}%
-- 52W range: ${levels['52w_low']:.2f} – ${levels['52w_high']:.2f}  (currently {((price - levels['52w_low']) / (levels['52w_high'] - levels['52w_low']) * 100):.0f}% of range)
+- 52W range: ${levels['52w_low']:.2f} – ${levels['52w_high']:.2f}  ({((price - levels['52w_low']) / (levels['52w_high'] - levels['52w_low']) * 100):.0f}% of range)
 
 TECHNICALS:
 - RSI(14) daily: {rsi_d:.1f}  |  RSI(14) hourly: {f"{rsi_h_last:.1f}" if rsi_h_last else "n/a"}
-- MACD: {"bullish crossover" if macd > sig else "bearish, below signal"} (MACD {macd:.3f} vs Signal {sig:.3f})
+- MACD: {"bullish crossover" if macd > sig else "bearish, below signal"} ({macd:.3f} vs signal {sig:.3f})
 - Bollinger Band: {bb_pct:.0f}% of band  (lower ${bb_lo:.2f} / upper ${bb_up:.2f})
-- EMA20: ${ema20:.2f} ({'price above' if price > ema20 else 'price below — key resistance to reclaim'})
-- EMA50: ${ema50:.2f} ({'price above' if price > ema50 else 'price below'})
-- SMA200: ${sma200:.2f} ({'price above' if price > sma200 else 'price below — in bearish territory'})
+- EMA20: ${ema20:.2f} ({'above' if price > ema20 else 'BELOW — key resistance to reclaim'})
+- EMA50: ${ema50:.2f} ({'above' if price > ema50 else 'below'})
+- SMA200: ${sma200:.2f} ({'above' if price > sma200 else 'below — bearish regime'})
 - ATR: ${atr:.2f}
 {channel_ctx}
-- Key supports: {', '.join(sup)}
-- Key resistances: {', '.join(res)}
+- Supports: {', '.join(sup)}  |  Resistances: {', '.join(res)}
 
-NEWS LAST 24H:
-{news_ctx}
+ANALYST REPORTS & MEDIA (last 5 days, ranked by importance):
+{analyst_ctx}
 
-Write exactly 2 paragraphs. No other text.
+SEC FILINGS & INSIDER TRADES (last 5 days):
+{filing_ctx}
 
-TECHNICAL: Express a clear, opinionated view on where BX stands right now. Reference the channel, the moving averages, RSI, MACD. State what the next key catalyst or level is. Be specific — name exact prices.
+Write exactly 2 paragraphs of flowing prose. No bullet points. No headers in the text itself — start each paragraph directly.
 
-FUNDAMENTAL: Summarize what actually happened in the last 24 hours from the news above. If there are insider trades, analyst moves, or filings — lead with those. If nothing happened, say so plainly."""
+Paragraph 1 — TECHNICAL VIEW: Give a clear, opinionated read. Name the channel position, which exact MAs need to be reclaimed and at what price, RSI momentum direction, MACD signal. State a specific bull case level and bear case level.
+
+Paragraph 2 — FUNDAMENTAL VIEW: Synthesise the analyst reports above into a coherent picture — what is the bull thesis being articulated, are there rating changes or price target moves, what do the short interest data suggest. Then address the filings/insider trades briefly and put them in context. Be substantive: if Seeking Alpha or another source has a clear thesis, summarise it."""
 
     # Cache per hour (keyed by price + RSI + hour)
     cache_key = hashlib.md5(
