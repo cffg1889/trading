@@ -223,7 +223,7 @@ def build_news_thread(news_items: list) -> html.Div:
     all_items = news_items  # already date-sorted from fetch_all_news
 
     return html.Div([
-        html.Div(f"🧠 INTELLIGENCE THREAD  — last 24h  ({len(all_items)})",
+        html.Div(f"🧠 INTELLIGENCE THREAD  — last 5 days  ({len(all_items)})",
                 style={"color": COLORS["muted"], "fontSize": "0.7rem",
                        "fontWeight": "700", "letterSpacing": "1px",
                        "padding": "10px 14px 6px",
@@ -358,7 +358,7 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         signal, signal_color = compute_signal(df, levels)
         rsi_h_last = float(rsi_h.iloc[-1]) if len(rsi_h) else None
         kpis = build_kpi_cards(df, levels, quote, rsi_h_last)
-        news_items = fetch_all_news(hours_back=24)
+        news_items = fetch_all_news(hours_back=120)
         snapshot = build_snapshot(df, levels, news_items, rsi_h_last)
         thread = build_news_thread(news_items)
         return fig, price_component, signal, signal_color, kpis, snapshot, thread

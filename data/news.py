@@ -162,7 +162,7 @@ def _save_items(items: List[NewsItem]):
     conn.close()
 
 
-def _load_cached(hours_back: int = 48) -> List[NewsItem]:
+def _load_cached(hours_back: int = 120) -> List[NewsItem]:
     try:
         conn = _get_conn()
         cutoff = (datetime.now() - timedelta(hours=hours_back)).isoformat()
