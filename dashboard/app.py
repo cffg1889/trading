@@ -11,6 +11,9 @@ import pandas as pd
 import numpy as np
 from datetime import datetime
 import threading
+import sqlite3
+import os
+import re
 
 from data.price import get_price_data, get_key_levels, get_current_quote, get_channel_lines, get_short_interest, get_implied_volatility, get_realized_volatility, get_hourly_rsi
 from data.fundamentals import get_fundamentals, get_analyst_ratings, get_earnings_history, get_peer_comparison
@@ -56,6 +59,212 @@ CHART_TEMPLATE = {
 
 # ── Layout ────────────────────────────────────────────────────────────────────
 
+def build_snapshot(df, levels, news_items, rsi_h_last=None) -> html.Div:
+    """
+    Generate a concise technical + fundamental snapshot using Claude API.
+    Cached for 1 hour to avoid excessive API calls.
+    """
+    import anthropic
+    import hashlib
+
+    # Build context for Claude
+    rsi_d = levels["rsi"]
+    macd_bull = levels["macd"] > levels["macd_signal"]
+    bb_pct = df["bb_pct"].iloc[-1] if "bb_pct" in df.columns else 0.5
+    ema20 = df["ema20"].iloc[-1]
+    ema50 = df["ema50"].iloc[-1]
+    price = levels["current"]
+
+    top_news = "\n".join([
+        f"- [{it.source}] {it.title} (sentiment: {it.sentiment})"
+        for it in sorted(news_items, key=lambda x: x.impact, reverse=True)[:8]
+    ]) if news_items else "No recent news available."
+
+    prompt = f"""You are a senior equity analyst. Provide a concise, actionable snapshot for a large Blackstone (BX) shareholder. Be direct and insightful. No fluff.
+
+TECHNICAL DATA (as of today):
+- Price: ${price:.2f}
+- RSI Daily: {rsi_d:.1f} {'(oversold)' if rsi_d < 30 else '(overbought)' if rsi_d > 70 else '(neutral)'}
+- RSI 1H: {f'{rsi_h_last:.1f}' if rsi_h_last else 'N/A'} {'(overbought - short term caution)' if rsi_h_last and rsi_h_last > 70 else ''}
+- MACD: {'Bullish crossover' if macd_bull else 'Bearish - below signal line'}
+- BB Position: {bb_pct*100:.0f}% of band (0%=lower band, 100%=upper band)
+- Price vs EMA20: {'above' if price > ema20 else 'below'} (${ema20:.2f})
+- Price vs EMA50: {'above' if price > ema50 else 'below'} (${ema50:.2f})
+- 52W High: ${levels['52w_high']:.2f} | 52W Low: ${levels['52w_low']:.2f}
+- ATR: ${levels['atr']:.2f}
+
+RECENT NEWS & FILINGS:
+{top_news}
+
+Write exactly 3 short paragraphs with these headers:
+**TECHNICAL:** [2-3 sentences on price action, trend, key levels, what to watch]
+**FUNDAMENTAL:** [2-3 sentences from the news above - filings, analyst moves, management activity]
+**CONCLUSION:** [1-2 sentences: clear actionable view - what should the shareholder do or watch for]"""
+
+    # Cache key based on daily data (don't call Claude more than once per hour)
+    cache_key = hashlib.md5(f"{price:.0f}{rsi_d:.0f}{datetime.now().strftime('%Y%m%d%H')}".encode()).hexdigest()[:8]
+
+    snapshot_text = ""
+    db_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "db", "bx.db"))
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.execute("CREATE TABLE IF NOT EXISTS snapshot_cache (key TEXT PRIMARY KEY, text TEXT, ts TEXT)")
+        row = conn.execute("SELECT text, ts FROM snapshot_cache WHERE key=?", (cache_key,)).fetchone()
+        if row:
+            snapshot_text = row[0]
+        conn.close()
+    except Exception:
+        pass
+
+    if not snapshot_text:
+        try:
+            client = anthropic.Anthropic(api_key=config.ANTHROPIC_API_KEY)
+            msg = client.messages.create(
+                model="claude-3-5-haiku-20241022",
+                max_tokens=400,
+                messages=[{"role": "user", "content": prompt}]
+            )
+            snapshot_text = msg.content[0].text
+            # Cache it
+            try:
+                conn = sqlite3.connect(db_path)
+                conn.execute("CREATE TABLE IF NOT EXISTS snapshot_cache (key TEXT PRIMARY KEY, text TEXT, ts TEXT)")
+                conn.execute("INSERT OR REPLACE INTO snapshot_cache VALUES (?,?,?)",
+                           (cache_key, snapshot_text, datetime.now().isoformat()))
+                conn.commit()
+                conn.close()
+            except Exception:
+                pass
+        except Exception as e:
+            snapshot_text = f"**TECHNICAL:** RSI {rsi_d:.0f} {'oversold' if rsi_d < 30 else 'overbought' if rsi_d > 70 else 'neutral'}. Price ${price:.2f}, {'above' if price > ema20 else 'below'} EMA20. MACD {'bullish' if macd_bull else 'bearish'}.\n\n**FUNDAMENTAL:** See news thread below for latest filings and analyst activity.\n\n**CONCLUSION:** Monitor key levels. {'Watch for reversal from oversold.' if rsi_d < 35 else 'Short-term caution with hourly RSI elevated.' if rsi_h_last and rsi_h_last > 70 else 'Hold current position.'}"
+
+    # Parse and render
+    paragraphs = re.split(r'\n\n+', snapshot_text.strip())
+
+    def render_para(text):
+        # Bold the header
+        text = re.sub(r'\*\*([^*]+)\*\*', r'\1', text)
+        parts = text.split(':', 1)
+        if len(parts) == 2:
+            return html.P([
+                html.Strong(parts[0] + ": ", style={"color": COLORS["blue"]}),
+                parts[1].strip()
+            ], style={"margin": "4px 0", "fontSize": "0.82rem", "lineHeight": "1.5"})
+        return html.P(text, style={"margin": "4px 0", "fontSize": "0.82rem"})
+
+    return html.Div([
+        html.Div([
+            html.Span("📊 MARKET INTELLIGENCE SNAPSHOT",
+                     style={"color": COLORS["muted"], "fontSize": "0.7rem",
+                            "fontWeight": "700", "letterSpacing": "1px",
+                            "textTransform": "uppercase"}),
+            html.Div([render_para(p) for p in paragraphs if p.strip()],
+                    style={"color": COLORS["text"], "marginTop": "6px"}),
+        ], style={
+            "padding": "12px 16px",
+            "backgroundColor": COLORS["card"],
+            "borderRadius": "8px",
+            "borderLeft": f"3px solid {COLORS['blue']}",
+            "margin": "8px 0",
+        })
+    ])
+
+
+def build_news_thread(news_items: list) -> html.Div:
+    """Render the full intelligence thread below the chart."""
+    if not news_items:
+        return html.P("Loading intelligence feed...",
+                     style={"color": COLORS["muted"], "padding": "1rem"})
+
+    SENT_COLOR = {"bullish": COLORS["green"], "bearish": COLORS["red"], "neutral": COLORS["muted"]}
+    SENT_BADGE = {"bullish": "🟢", "bearish": "🔴", "neutral": "⚪"}
+    IMPACT_STARS = {1: "·", 2: "··", 3: "···", 4: "★", 5: "★★"}
+
+    def impact_color(imp):
+        if imp >= 4: return COLORS["red"]
+        if imp >= 3: return COLORS["yellow"]
+        return COLORS["muted"]
+
+    def render_item(item):
+        return html.Div([
+            # Source row
+            html.Div([
+                html.Span(f"{item.icon} {item.source}",
+                         style={"color": COLORS["blue"], "fontWeight": "700",
+                                "fontSize": "0.72rem", "marginRight": "8px"}),
+                html.Span(SENT_BADGE[item.sentiment],
+                         style={"marginRight": "6px", "fontSize": "0.75rem"}),
+                html.Span(IMPACT_STARS.get(item.impact, "·"),
+                         style={"color": impact_color(item.impact),
+                                "marginRight": "8px", "fontSize": "0.75rem",
+                                "fontWeight": "700"}),
+                html.Span(item.time_ago,
+                         style={"color": COLORS["muted"], "fontSize": "0.70rem"}),
+            ], style={"display": "flex", "alignItems": "center", "marginBottom": "3px"}),
+            # Title
+            html.A(item.title, href=item.url, target="_blank", style={
+                "color": SENT_COLOR[item.sentiment],
+                "textDecoration": "none", "fontWeight": "600",
+                "fontSize": "0.83rem", "lineHeight": "1.4",
+                "display": "block", "marginBottom": "3px",
+            }),
+            # Summary
+            html.P(
+                item.summary[:180] + ("..." if len(item.summary) > 180 else ""),
+                style={"color": COLORS["muted"], "fontSize": "0.75rem",
+                       "margin": "0", "lineHeight": "1.4"},
+            ),
+        ], style={
+            "padding": "10px 14px",
+            "borderBottom": f"1px solid {COLORS['border']}",
+            "borderLeft": f"3px solid {impact_color(item.impact)}",
+            "marginBottom": "2px",
+        })
+
+    # Group by source type with counts
+    sec_items    = [i for i in news_items if i.source_type in ("sec", "insider")]
+    ir_items     = [i for i in news_items if i.source_type == "ir"]
+    social_items = [i for i in news_items if i.source_type == "linkedin"]
+    media_items  = [i for i in news_items if i.source_type in ("cnbc", "wsj")]
+    other_items  = [i for i in news_items if i.source_type == "rss"]
+
+    sections = []
+    for label, group_items in [
+        ("📄 SEC Filings & Insider Trades", sec_items),
+        ("🏢 Blackstone IR", ir_items),
+        ("💼 Management (LinkedIn)", social_items),
+        ("📺 CNBC & WSJ", media_items),
+        ("🌐 All Other News", other_items),
+    ]:
+        if not group_items:
+            continue
+        sections.append(html.Div([
+            html.Div(f"{label}  ({len(group_items)})",
+                    style={"color": COLORS["muted"], "fontSize": "0.70rem",
+                           "fontWeight": "700", "padding": "8px 14px 4px",
+                           "textTransform": "uppercase", "letterSpacing": "0.5px",
+                           "backgroundColor": "rgba(0,0,0,0.3)"}),
+            *[render_item(it) for it in group_items],
+        ]))
+
+    return html.Div([
+        html.Div("🧠 INTELLIGENCE THREAD",
+                style={"color": COLORS["muted"], "fontSize": "0.7rem",
+                       "fontWeight": "700", "letterSpacing": "1px",
+                       "padding": "12px 14px 6px",
+                       "textTransform": "uppercase"}),
+        *sections,
+    ], style={
+        "backgroundColor": COLORS["card"],
+        "borderRadius": "8px",
+        "border": f"1px solid {COLORS['border']}",
+        "marginTop": "12px",
+        "maxHeight": "70vh",
+        "overflowY": "auto",
+    })
+
+
 def build_layout():
     return dbc.Container([
         # Header
@@ -89,6 +298,11 @@ def build_layout():
             ]),
         ], className="px-2 mb-2"),
 
+        # Snapshot bar
+        dbc.Row([
+            dbc.Col(html.Div(id="snapshot-bar"), className="px-2")
+        ], className="mb-2"),
+
         # ── MAIN CHART ─────────────────────────────────────────────────────────
         dbc.Row([
             dbc.Col([
@@ -102,6 +316,11 @@ def build_layout():
 
         # ── KPI CARDS ─────────────────────────────────────────────────────────
         dbc.Row(id="kpi-cards", className="px-2 mb-3 g-2"),
+
+        # Intelligence thread
+        dbc.Row([
+            dbc.Col(html.Div(id="news-thread"), className="px-2")
+        ], className="mb-3"),
 
         # ── TABS ──────────────────────────────────────────────────────────────
         dbc.Tabs([
@@ -132,6 +351,8 @@ app.layout = build_layout()
     Output("signal-badge", "children"),
     Output("signal-badge", "color"),
     Output("kpi-cards", "children"),
+    Output("snapshot-bar", "children"),
+    Output("news-thread", "children"),
     Input("refresh-interval", "n_intervals"),
     Input("btn-1m", "n_clicks"),
     Input("btn-3m", "n_clicks"),
@@ -163,12 +384,15 @@ def update_dashboard(n_intervals, btn1m, btn3m, btn6m, btn1y, btn2y):
         signal, signal_color = compute_signal(df, levels)
         rsi_h_last = float(rsi_h.iloc[-1]) if len(rsi_h) else None
         kpis = build_kpi_cards(df, levels, quote, rsi_h_last)
-        return fig, price_component, signal, signal_color, kpis
+        news_items = fetch_all_news(hours_back=48)
+        snapshot = build_snapshot(df, levels, news_items, rsi_h_last)
+        thread = build_news_thread(news_items)
+        return fig, price_component, signal, signal_color, kpis, snapshot, thread
     except Exception as e:
         import traceback; traceback.print_exc()
         empty_fig = go.Figure()
         empty_fig.update_layout(template="plotly_dark", paper_bgcolor=COLORS["bg"])
-        return empty_fig, f"Error: {e}", "ERROR", "danger", []
+        return empty_fig, f"Error: {e}", "ERROR", "danger", [], [], []
 
 
 def build_chart(df: pd.DataFrame, levels: dict, channel: list = None,
