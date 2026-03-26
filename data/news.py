@@ -78,13 +78,16 @@ BEARISH_WORDS = ["downgrade", "cut", "miss", "decline", "fall", "drop", "concern
                  "disappoints", "redemption", "outflows", "warning", "lawsuit"]
 BULLISH_WORDS = ["upgrade", "beat", "buy", "outperform", "strong", "growth", "raise",
                  "positive", "bullish", "record", "exceeds", "inflows", "momentum",
-                 "acquisition", "deal", "partnership", "raises", "fund"]
+                 "acquisition", "deal", "partnership", "raises", "fund",
+                 "realization", "realized", "performance revenue", "more than", "exceeds"]
 BX_KEYWORDS   = ["blackstone", " bx ", "bx stock", "schwarzman", "jon gray",
                  "breit", "bcred", "alternative assets", "private equity blackstone"]
 
 HIGH_IMPACT_WORDS = ["earnings", "8-k", "10-q", "acquisition", "merger", "dividend",
                      "upgrade", "downgrade", "insider", "bought", "sold", "form 4",
-                     "quarterly", "annual", "ceo", "president", "billion", "fund raise"]
+                     "quarterly", "annual", "ceo", "president", "billion", "fund raise",
+                     "realization", "realized", "performance revenue", "million",
+                     "preliminary", "estimate", "revenue"]
 
 
 def _is_relevant(text: str) -> bool:
@@ -147,11 +150,21 @@ def _get_conn():
     return conn
 
 
-def _save_items(items: List[NewsItem]):
+def _save_items(items: List[NewsItem], purge_source_types: list = None):
+    """Save items to cache. If purge_source_types is set, delete all existing rows for those
+    source_types first — prevents stale entries from surviving beyond the new fetch."""
     conn = _get_conn()
     now = datetime.now().isoformat()
+    if purge_source_types:
+        for st in purge_source_types:
+            conn.execute("DELETE FROM news_cache WHERE source_type = ?", (st,))
     for it in items:
-        uid = re.sub(r"[^a-z0-9]", "", it.title.lower())[:60]
+        # Use URL as the primary key for IR/SEC items (stable across runs).
+        # Fall back to normalized title for RSS/social items that may lack a stable URL.
+        if it.url and it.source_type in ("ir", "sec", "insider"):
+            uid = re.sub(r"[^a-z0-9]", "", it.url.lower())[:80]
+        else:
+            uid = re.sub(r"[^a-z0-9]", "", it.title.lower())[:60]
         conn.execute("""
             INSERT OR REPLACE INTO news_cache
             (id, title, source, url, summary, published, sentiment, impact, source_type, fetched_at)
@@ -232,6 +245,48 @@ EDGAR_HEADERS = {"User-Agent": "BX Intelligence research@bxintel.com"}
 KEY_FORMS = {"8-K", "10-Q", "10-K", "SC 13D", "SC 13G", "DEF 14A", "S-11", "N-2"}
 
 
+def _fetch_8k_summary(cik_clean: str, acc: str, primary_doc: str) -> str:
+    """Fetch the first ~600 chars of substantive text from an 8-K filing."""
+    try:
+        doc_url = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc}/{primary_doc}"
+        r = requests.get(doc_url, headers=EDGAR_HEADERS, timeout=8)
+        soup = BeautifulSoup(r.text, "lxml")
+        for tag in soup(["script", "style"]):
+            tag.decompose()
+        text = re.sub(r"\s+", " ", soup.get_text(separator=" ")).strip()
+        # Find content starting at an Item heading, then strip the heading itself
+        for marker in ["Item 7.01", "Item 8.01", "Item 2.02", "Item 1.01",
+                        "ITEM 7.01", "ITEM 8.01"]:
+            idx = text.find(marker)
+            if idx != -1:
+                chunk = text[idx:idx + 800]
+                # Strip the "Item X.XX <heading> " prefix — ends before the first capital sentence
+                # Pattern: "Item 7.01 Regulation FD Disclosure " → strip up through the heading words
+                chunk = re.sub(r"^Item\s+\d+\.\d+[A-Za-z\s]+\.\s*", "", chunk).strip()
+                chunk = re.sub(r"^Item\s+\d+\.\d+\s+[A-Z][A-Za-z\s]+\s+", "", chunk).strip()
+                return chunk[:600]
+        # Fallback: skip first 200 chars (cover page boilerplate)
+        return text[200:800].strip()
+    except Exception:
+        return ""
+
+
+def _make_8k_title(entity: str, date: str, summary: str) -> str:
+    """Build a human-readable 8-K title from the filing summary text."""
+    if not summary:
+        return f"SEC 8-K — {entity} ({date})"
+    # Find a good description: look for "announcing" clause or use direct content
+    for anchor in ["announcing", "Announcing", "estimates", "Estimates", "expects to",
+                   "reported", "announced", "Blackstone"]:
+        idx = summary.find(anchor)
+        if idx != -1:
+            snippet = summary[idx:idx + 120].split(".")[0].strip()
+            if len(snippet) > 20:
+                return f"SEC 8-K — {entity} ({date}): {snippet}"
+    # Direct first 120 chars, no period splitting
+    return f"SEC 8-K — {entity} ({date}): {summary[:120]}"
+
+
 def fetch_edgar_filings(days_back: int = 60) -> List[NewsItem]:
     items = []
     cutoff = datetime.now() - timedelta(days=days_back)
@@ -243,10 +298,12 @@ def fetch_edgar_filings(days_back: int = 60) -> List[NewsItem]:
             )
             data = r.json()
             f = data.get("filings", {}).get("recent", {})
-            dates    = f.get("filingDate", [])
-            forms    = f.get("form", [])
-            accessions = f.get("accessionNumber", [])
+            dates        = f.get("filingDate", [])
+            forms        = f.get("form", [])
+            accessions   = f.get("accessionNumber", [])
             descriptions = f.get("primaryDocument", [])
+            # EDGAR also provides a short "items" field describing what's reported in 8-Ks
+            items_field  = f.get("items", [])
 
             for i, d in enumerate(dates):
                 try:
@@ -258,13 +315,27 @@ def fetch_edgar_filings(days_back: int = 60) -> List[NewsItem]:
                     acc = accessions[i].replace("-", "") if i < len(accessions) else ""
                     cik_clean = cik.lstrip("0")
                     url_f = f"https://www.sec.gov/Archives/edgar/data/{cik_clean}/{acc}/"
-                    desc = descriptions[i] if i < len(descriptions) else ""
-                    title = f"SEC {form} — {entity} ({d})"
-                    summary = f"{entity} filed {form} with the SEC on {d}. Document: {desc}"
+                    primary_doc = descriptions[i] if i < len(descriptions) else ""
+                    item_desc = items_field[i] if i < len(items_field) else ""
+
+                    # For 8-Ks, fetch actual content to generate a meaningful summary
+                    if form == "8-K" and primary_doc:
+                        summary_text = _fetch_8k_summary(cik_clean, acc, primary_doc)
+                    else:
+                        summary_text = ""
+
+                    if form == "8-K":
+                        title = _make_8k_title(entity, d, summary_text)
+                    else:
+                        title = f"SEC {form} — {entity} ({d})"
+
+                    summary = summary_text or f"{entity} filed {form} with the SEC on {d}. Document: {primary_doc}"
+                    sentiment = _score_sentiment(title + " " + summary)
                     items.append(NewsItem(
                         title=title, source="SEC EDGAR", url=url_f,
-                        summary=summary, published=d,
-                        sentiment="neutral", impact=_score_impact(title, "SEC EDGAR", "sec"),
+                        summary=summary[:400], published=d,
+                        sentiment=sentiment,
+                        impact=_score_impact(title + " " + summary, "SEC EDGAR", "sec"),
                         source_type="sec",
                     ))
                 except Exception:
@@ -433,36 +504,91 @@ def fetch_insider_trades(days_back: int = 60) -> List[NewsItem]:
 
 # ── Source 3: BX Investor Relations ──────────────────────────────────────────
 
+_IR_KEYWORDS = [
+    "blackstone", "earnings", "quarter", "annual", "dividend", "fund", "billion",
+    "acqui", "realization", "realized", "revenue", "performance", "million",
+    "preliminary", "estimate", "investment income", "capital", "deploy",
+]
+
+
+def _fetch_ir_page_date(url: str) -> str:
+    """Try to extract the press release date from the article page itself."""
+    try:
+        r = requests.get(url, headers=HEADERS, timeout=8)
+        soup = BeautifulSoup(r.text, "lxml")
+        # 1. Open Graph / article meta tags (most reliable)
+        for prop in ("article:published_time", "article:modified_time",
+                     "og:published_time", "datePublished"):
+            el = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+            if el:
+                content = el.get("content", "")
+                if content and len(content) >= 8:
+                    return content[:10]  # return YYYY-MM-DD portion only
+        # 2. JSON-LD structured data
+        import json
+        for script in soup.find_all("script", type="application/ld+json"):
+            try:
+                data = json.loads(script.string or "")
+                for key in ("datePublished", "dateModified", "dateCreated"):
+                    val = data.get(key, "")
+                    if val and len(val) >= 8:
+                        return val[:10]
+            except Exception:
+                pass
+        # 3. HTML selectors
+        for sel in ["time", ".date", ".news-date", ".release-date",
+                    "[class*='date']", "[class*='Date']", "span.field-date"]:
+            el = soup.select_one(sel)
+            if el:
+                txt = el.get("datetime") or el.get_text(strip=True)
+                if txt and len(txt) >= 8:
+                    return txt[:10]
+    except Exception:
+        pass
+    return ""
+
+
 def fetch_bx_ir() -> List[NewsItem]:
-    """Scrape ir.blackstone.com for press releases and announcements."""
+    """Scrape Blackstone press release pages for announcements."""
     items = []
-    urls = [
-        "https://ir.blackstone.com/news-releases/default.aspx",
-        "https://ir.blackstone.com/investor-day/default.aspx",
-    ]
-    for url in urls:
-        try:
-            r = requests.get(url, headers=HEADERS, timeout=12)
-            soup = BeautifulSoup(r.text, "lxml")
-            # Find news release links
-            for a in soup.find_all("a", href=True)[:20]:
-                href = a["href"]
-                text = a.get_text(strip=True)
-                if len(text) < 15:
-                    continue
-                if any(kw in text.lower() for kw in ["blackstone", "earnings", "quarter", "annual",
-                                                       "dividend", "fund", "billion", "acqui"]):
-                    full_url = href if href.startswith("http") else "https://ir.blackstone.com" + href
-                    items.append(NewsItem(
-                        title=text, source="BX IR", url=full_url,
-                        summary=f"Blackstone Investor Relations announcement: {text}",
-                        published=datetime.now().strftime("%Y-%m-%d"),
-                        sentiment=_score_sentiment(text),
-                        impact=_score_impact(text, "BX IR", "ir"),
-                        source_type="ir",
-                    ))
-        except Exception as e:
-            print(f"[bx_ir] {e}")
+    seen_urls: set = set()
+    # blackstone.com/news/press/ is the authoritative source — IR subdomain redirects here
+    listing_url = "https://www.blackstone.com/news/press/"
+    try:
+        r = requests.get(listing_url, headers=HEADERS, timeout=12)
+        soup = BeautifulSoup(r.text, "lxml")
+
+        # Only grab links that are actual press release articles (href contains /news/press/)
+        press_links = [
+            a for a in soup.find_all("a", href=True)
+            if "/news/press/" in a["href"].lower()
+            and len(a.get_text(strip=True)) >= 20
+        ]
+
+        for a in press_links[:40]:
+            href = a["href"]
+            text = re.sub(r"\s+", " ", a.get_text(strip=True))
+            if len(text) < 15:
+                continue
+            if not any(kw in text.lower() for kw in _IR_KEYWORDS):
+                continue
+            full_url = href if href.startswith("http") else "https://www.blackstone.com" + href
+            if full_url in seen_urls:
+                continue
+            seen_urls.add(full_url)
+            pub_date = _fetch_ir_page_date(full_url)
+            if not pub_date:
+                pub_date = datetime.now().strftime("%Y-%m-%d")
+            items.append(NewsItem(
+                title=text, source="BX IR", url=full_url,
+                summary=f"Blackstone press release: {text}",
+                published=pub_date,
+                sentiment=_score_sentiment(text),
+                impact=_score_impact(text, "BX IR", "ir"),
+                source_type="ir",
+            ))
+    except Exception as e:
+        print(f"[bx_ir] {e}")
     return items
 
 
@@ -776,7 +902,8 @@ def fetch_all_news(hours_back: int = 48, force: bool = False) -> List[NewsItem]:
             t.start()
 
             if items:
-                _save_items(items)
+                # Purge ir/sec entries before saving so stale entries can't survive refreshes
+                _save_items(items, purge_source_types=["ir", "sec"])
 
     # Always return from cache (fast)
     cached = _load_cached(hours_back)
